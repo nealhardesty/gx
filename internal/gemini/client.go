@@ -190,6 +190,44 @@ func (c *Client) Generate(ctx context.Context, prompt string, historyContext []h
 	return result, err
 }
 
+// formatToolArgs formats tool arguments as a function call parameter list.
+func (c *Client) formatToolArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var parts []string
+	for k, v := range args {
+		var valStr string
+		switch val := v.(type) {
+		case string:
+			valStr = fmt.Sprintf("%q", val)
+		case bool:
+			valStr = fmt.Sprintf("%t", val)
+		case float64:
+			valStr = fmt.Sprintf("%g", val)
+		default:
+			valStr = fmt.Sprintf("%v", val)
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k, valStr))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatToolResult formats tool result for verbose output, truncating if too long.
+func (c *Client) formatToolResult(result string) string {
+	const maxLen = 200
+	if len(result) <= maxLen {
+		return result
+	}
+	// Truncate and add ellipsis
+	truncated := result[:maxLen]
+	// Try to break at a newline if near the limit
+	if idx := strings.LastIndex(truncated, "\n"); idx > maxLen-50 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "... (truncated)"
+}
+
 // processResponse handles the response, including any tool calls.
 func (c *Client) processResponse(ctx context.Context, chat *genai.ChatSession, resp *genai.GenerateContentResponse, promptLog []string) (string, error) {
 	turnNum := 1
@@ -226,11 +264,19 @@ func (c *Client) processResponse(ctx context.Context, chat *genai.ChatSession, r
 			}
 			promptLog = append(promptLog, funcCallText)
 
+			// Verbose output: show that function calls were received
+			if c.verbose {
+				fmt.Fprintf(os.Stderr, "[tool] Received %d function call(s)\n", len(functionCalls))
+			}
+
 			var functionResponses []genai.Part
 			funcResponseText := fmt.Sprintf("TURN %d - TOOL RESPONSES:\n", turnNum)
 			for _, fc := range functionCalls {
 				name, args, err := tools.ParseFunctionCall(fc)
 				if err != nil {
+					if c.verbose {
+						fmt.Fprintf(os.Stderr, "[tool] %s() - Error parsing: %s\n", fc.Name, err.Error())
+					}
 					funcResponseText += fmt.Sprintf("Function: %s - Error: %s\n", fc.Name, err.Error())
 					functionResponses = append(functionResponses, genai.FunctionResponse{
 						Name:     fc.Name,
@@ -239,14 +285,28 @@ func (c *Client) processResponse(ctx context.Context, chat *genai.ChatSession, r
 					continue
 				}
 
+				// Verbose output: show tool call with arguments
+				if c.verbose {
+					argsStr := c.formatToolArgs(args)
+					fmt.Fprintf(os.Stderr, "[tool] %s(%s)\n", name, argsStr)
+				}
+
 				result, err := c.tools.ExecuteTool(name, args)
 				if err != nil {
+					if c.verbose {
+						fmt.Fprintf(os.Stderr, "[tool] %s -> error: %s\n", name, err.Error())
+					}
 					funcResponseText += fmt.Sprintf("Function: %s - Error: %s\n", name, err.Error())
 					functionResponses = append(functionResponses, genai.FunctionResponse{
 						Name:     fc.Name,
 						Response: map[string]any{"error": err.Error()},
 					})
 				} else {
+					// Verbose output: show result (truncated if too long)
+					if c.verbose {
+						resultStr := c.formatToolResult(result)
+						fmt.Fprintf(os.Stderr, "[tool] %s -> %s\n", name, resultStr)
+					}
 					resultJSON, _ := json.MarshalIndent(result, "", "  ")
 					funcResponseText += fmt.Sprintf("Function: %s\nResult: %s\n", name, string(resultJSON))
 					functionResponses = append(functionResponses, genai.FunctionResponse{

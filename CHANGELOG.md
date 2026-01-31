@@ -28,6 +28,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **2026-01-31**: Added `gxx` command shortcut — automatically includes `-y` flag (YOLO mode) for immediate generation and execution. Both `gx` and `gxx` binaries are now built and installed together.
+- **2026-01-31**: Refactored CLI logic into `internal/cli` package — extracted all shared logic from `main.go` to eliminate code duplication between `gx` and `gxx` commands. Main packages are now thin wrappers that delegate to shared library code.
+- **2026-01-31**: Moved version constant to `internal/version` package — enables both `gx` and `gxx` to share the same version without duplication.
+- **2026-01-31**: Updated Makefile — now builds both `gx` and `gxx` binaries, and `make install` installs both commands. `go install ./...` will also install both binaries.
+
+### Changed
+- **2026-01-31**: Updated `.cursorrules` — added DRY (Don't Repeat Yourself) as a critical requirement in the Code Quality section, emphasizing that code duplication is never acceptable and shared logic must be extracted to reusable packages.
+
 ### Fixed
 - **2026-01-31**: Fixed shell detection in `internal/gemini/client.go` — PowerShell is now correctly detected when running in PowerShell by checking `PSModulePath` before `ComSpec` (which is often set even in PowerShell sessions)
 - **2026-01-31**: Enhanced system instruction in `internal/gemini/client.go` — Added explicit warning at the top of instructions to NEVER use REM comments for PowerShell (REM is only for CMD), ensuring the LLM uses `#` for PowerShell comments

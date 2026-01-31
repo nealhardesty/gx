@@ -135,6 +135,11 @@
 - Update CHANGELOG.md when version changes
 
 ## Code Quality
+**CRITICAL: DRY (Don't Repeat Yourself) is an absolute requirement**
+- Never duplicate code - extract shared logic into reusable packages, functions, or types
+- When creating multiple entry points (e.g., cmd/gx and cmd/gxx), extract all shared logic into internal packages
+- Main packages should be thin wrappers that delegate to shared library code
+- If you find yourself copying code between files, stop and refactor to a shared location
 - Use interfaces for abstraction and testability
 - Keep interfaces small and focused (Go proverb: "The bigger the interface, the weaker the abstraction")
 - Use structs for data containers

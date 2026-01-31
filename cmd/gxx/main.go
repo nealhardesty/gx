@@ -1,4 +1,4 @@
-// gx is a CLI assistant that converts natural language into executable shell commands.
+// gxx is a shortcut for gx that automatically includes the -y (YOLO mode) flag.
 package main
 
 import (
@@ -10,6 +10,7 @@ import (
 
 func main() {
 	os.Exit(cli.Run(cli.Options{
-		Version: version.Version,
+		ForceYolo: true,
+		Version:   version.Version,
 	}))
 }
