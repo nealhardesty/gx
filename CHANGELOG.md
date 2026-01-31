@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **2026-01-31**: Added `gx.png` logo to README.md — incorporated project logo at the top of the documentation
 - **2026-01-31**: Added `gxx` command shortcut — automatically includes `-y` flag (YOLO mode) for immediate generation and execution. Both `gx` and `gxx` binaries are now built and installed together.
 - **2026-01-31**: Refactored CLI logic into `internal/cli` package — extracted all shared logic from `main.go` to eliminate code duplication between `gx` and `gxx` commands. Main packages are now thin wrappers that delegate to shared library code.
 - **2026-01-31**: Moved version constant to `internal/version` package — enables both `gx` and `gxx` to share the same version without duplication.

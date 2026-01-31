@@ -1,5 +1,7 @@
 # gx
 
+![gx logo](gx.png)
+
 A lightning-fast CLI assistant that converts natural language into executable shell commands using Google Gemini (Vertex AI).
 
 **Zero fluff.** Returns raw shell code, not chatty explanations.
