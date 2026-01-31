@@ -31,18 +31,35 @@ A lightning-fast CLI assistant that converts natural language into executable sh
 **Prerequisites:**
 - [Go 1.21+](https://go.dev/)
 - Google Cloud Project with Vertex AI API enabled
-- `gcloud auth application-default login`
+- [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) installed and configured
 
+**GCP Setup:**
 ```bash
-go build -o gx main.go
-sudo mv gx /usr/local/bin/
+# Authenticate with Google Cloud
+gcloud auth application-default login
+
+# Set your default GCP project (REQUIRED)
+gcloud config set project YOUR_PROJECT_ID
 ```
 
-- or - 
+> **Note:** If you see `no project ID specified and failed to get default`, run the `gcloud config set project` command above with your GCP project ID.
 
+**Build from source:**
+```bash
+go build -o gx .
+sudo mv gx /usr/local/bin/   # Linux/macOS
+
+# Or on Windows (PowerShell)
+go build -o gx.exe .
+```
+
+**Or install directly:**
 ```bash
 go install github.com/nealhardesty/gx@latest
+
+# Then configure gcloud (if not already done)
 gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
 ```
 
 ## Usage
@@ -71,6 +88,8 @@ gx -y "list docker containers"
 | `-v` | Verbose — include detailed comments in output |
 | `-c` | Clear history and staged commands |
 | `-n` | Disable tools (no file system access for LLM) |
+| `-p` | Print the prompt that would be sent to the LLM (don't send it) |
+| `--version` | Display version information |
 
 ## Storage
 
@@ -81,12 +100,17 @@ gx -y "list docker containers"
 
 ## Tools
 
-The LLM has access to a **readonly** `files` tool for context gathering:
-- `pwd` / `ls` / `ls -R` / `stat` / `cat`
+The LLM has access to **readonly** tools for context gathering:
 
-The LLM also has access to a detailed `ps` equivalent to see running processes.
-
-The LLM also should have access to `uptime` command
+| Tool | Description |
+|------|-------------|
+| `pwd` | Current working directory |
+| `ls` | List directory contents |
+| `ls -R` | Recursive directory listing |
+| `stat` | File/directory metadata |
+| `cat` | Read file contents (max 100KB) |
+| `ps` | Running processes |
+| `uptime` | System uptime |
 
 Disable all tools with `-n` flag.
 
@@ -98,18 +122,69 @@ Obviously, the context of the current platform (mac, linux, wsl2, powershell/win
 
 ## Configuration
 
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `GX_MODEL` | Gemini model to use | `gemini-1.5-flash` |
-| `GX_HISTORY` | Number of history commands to keep by default in ~/.gxhistory | 10 |
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GX_MODEL` | Gemini model to use | `gemini-2.5-flash-lite` |
+| `GX_HISTORY` | Max history entries | `10` |
+| `GX_PROMPT_OUTPUT` | Path to write prompt logs for debugging | `~/.gxprompt` |
+
+### Debugging
+
+Use the `-p` flag to see exactly what prompt is being sent to the LLM:
+```bash
+gx -p "list files in current directory"
+```
+
+This will print the full prompt including system instructions, history context, and your input without actually sending it to the LLM.
+
+Prompt logs are automatically written to the file specified by `GX_PROMPT_OUTPUT` (default: `~/.gxprompt`) for every request, showing the complete conversation flow including tool calls and responses.
+
+## Project Structure
+
+```
+gx/
+├── main.go              # CLI entry point, flag parsing
+├── version.go           # Semantic version constant
+├── Makefile             # Build automation
+├── go.mod / go.sum      # Dependencies
+└── internal/
+    ├── gemini/
+    │   └── client.go    # Vertex AI client, system prompts
+    ├── history/
+    │   └── history.go   # ~/.gxhistory management
+    └── tools/
+        ├── registry.go  # Tool registration & dispatch
+        ├── files.go     # File system tools
+        └── process.go   # Process tools (ps, uptime)
+```
 
 ## Technical Details
 
 - **SDK:** `cloud.google.com/go/vertexai/genai`
-- **Model:** `gemini-1.5-flash` (optimized for speed/latency)
+- **Model:** `gemini-2.5-flash-lite` (optimized for speed/latency)
 - **System Instruction:** Shell-type aware prompt that returns raw commands only — no markdown, no backticks, no explanations. Comments use shell-appropriate syntax.
+- **Context:** OS, platform, and shell type automatically detected and passed to the LLM
 
-Note, the prompt will need context information always passed in (OS, platform, etc)
+## Troubleshooting
+
+### "no project ID specified and failed to get default"
+
+This error means gcloud doesn't have a default project configured. Fix it by running:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
+```
+
+To find your project ID, run `gcloud projects list` or check the [Google Cloud Console](https://console.cloud.google.com/).
+
+### "failed to create Gemini client"
+
+Ensure you have:
+1. Authenticated: `gcloud auth application-default login`
+2. Enabled Vertex AI API in your GCP project
+3. Set your project: `gcloud config set project YOUR_PROJECT_ID`
 
 ## License
 

@@ -2,9 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.0] - 2026-01-31
+
+### Added
+- **Initial Release**: Full implementation of gx CLI assistant
+- `main.go` — Entry point with CLI flag parsing (-x, -y, -v, -c, -n, --version)
+- `version.go` — Semantic versioning (v0.1.0)
+- `go.mod` — Go module with Vertex AI SDK dependency
+- `Makefile` — Build automation (build, test, run, clean, lint, fmt, tidy, help, version, install)
+- `internal/gemini/client.go` — Vertex AI Gemini client with tool integration, shell/platform detection, system instruction generation
+- `internal/history/history.go` — JSON-based history management for ~/.gxhistory and command staging to ~/.gx
+- `internal/tools/registry.go` — Tool registration and function call dispatch for LLM
+- `internal/tools/files.go` — File system tools (pwd, ls, ls -R, stat, cat)
+- `internal/tools/process.go` — Process tools (ps, uptime) with cross-platform support
+
+### Features
+- Natural language to shell command conversion using Google Vertex AI Gemini
+- Context-aware follow-up prompts via conversation history
+- Command staging to `~/.gx` with execute via `-x` flag
+- YOLO mode (`-y`) for immediate execution
+- Verbose mode (`-v`) for detailed command comments
+- LLM tools for file system and process context gathering
+- Cross-platform support (Windows PowerShell, bash, zsh, macOS, Linux, WSL2)
+- Shell-aware output formatting (correct comment syntax per shell)
+
 ## [Unreleased]
 
+### Fixed
+- **2026-01-31**: Fixed shell detection in `internal/gemini/client.go` — PowerShell is now correctly detected when running in PowerShell by checking `PSModulePath` before `ComSpec` (which is often set even in PowerShell sessions)
+- **2026-01-31**: Enhanced system instruction in `internal/gemini/client.go` — Added explicit warning at the top of instructions to NEVER use REM comments for PowerShell (REM is only for CMD), ensuring the LLM uses `#` for PowerShell comments
+- **2026-01-31**: Fixed exit code propagation in `main.go` — When executing with `-x` or `-y` flags, the program now returns the same exit code as the subprocess, ensuring proper error handling in scripts and pipelines. Stdout and stderr are properly streamed to the parent process.
+
+### Added
+- **2026-01-31**: Added prompt debugging feature in `internal/gemini/client.go` — When `GX_PROMPT_OUTPUT` environment variable is set (defaults to `~/.gxprompt`), all prompts sent to the LLM are logged to the specified file, including system instructions, history context, user prompts, tool calls, and responses, separated by `---` between turns
+- **2026-01-31**: Added `-p` flag in `main.go` — Print the prompt that would be sent to the LLM without actually sending it, useful for debugging and understanding what instructions are being sent
+
 ### Changed
+- **2026-01-31**: Updated default Gemini model from `gemini-1.5-flash` to `gemini-2.5-flash-lite` in `internal/gemini/client.go`, `main.go` usage text, and `README.md` documentation
+- **2026-01-31**: Updated `Makefile` — build target now automatically detects OS and creates `gx.exe` on Windows and `gx` on Linux/Mac/etc
+- **2026-01-31**: Updated CLI help output (`main.go`) — added GCP Setup section showing required gcloud commands
+- **2026-01-31**: Updated `README.md` — added clear GCP project setup instructions with `gcloud config set project` command, added note about common "no project ID specified" error
 - **2026-01-31**: Rewrote `README.md` — compressed redundant content, added ASCII architecture diagram, organized sections for clarity (Installation, Usage, Options, Storage, Tools, Configuration, Technical Details)
 
 ### Added
