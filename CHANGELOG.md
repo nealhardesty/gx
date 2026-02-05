@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **2026-02-05**: Added stdin input support with `-` command-line option — when `-` is passed as a standalone argument, gx will read from stdin and append it to the prompt before sending. This enables piping file contents or command output directly into prompts (e.g., `cat error.log | gx - "explain this error"` or `docker ps | gx -`)
 - **2026-01-31**: Added `gx.png` logo to README.md — incorporated project logo at the top of the documentation
 - **2026-01-31**: Added `gxx` command shortcut — automatically includes `-y` flag (YOLO mode) for immediate generation and execution. Both `gx` and `gxx` binaries are now built and installed together.
 - **2026-01-31**: Refactored CLI logic into `internal/cli` package — extracted all shared logic from `main.go` to eliminate code duplication between `gx` and `gxx` commands. Main packages are now thin wrappers that delegate to shared library code.

@@ -93,12 +93,18 @@ gx "actually, only look in /var/log"
 
 # YOLO mode (generate and execute immediately)
 gx -y "list docker containers"
+
+# Read from stdin using '-' option
+cat error.log | gx - "explain this error"
+docker ps | gx - "create a kill command for these containers"
+git diff | gx -  # Use stdin as entire prompt
 ```
 
 ## Options
 
 | Flag | Description |
 |------|-------------|
+| `-` | Read additional input from stdin and append to prompt |
 | `-x` | Execute command staged in `~/.gx` |
 | `-y` | YOLO mode — execute immediately (no staging review) |
 | `-v` | Verbose — include detailed comments in output |
@@ -106,6 +112,21 @@ gx -y "list docker containers"
 | `-n` | Disable tools (no file system access for LLM) |
 | `-p` | Print the prompt that would be sent to the LLM (don't send it) |
 | `--version` | Display version information |
+
+### Stdin Support
+
+Use `-` as a command-line option to read from stdin. The stdin content will be appended to your prompt:
+
+```bash
+# Append stdin to prompt
+cat error.log | gx - "explain this error"
+
+# Use stdin as entire prompt
+docker ps | gx -
+
+# Works with other flags
+git diff | gx -y - "create a commit message for these changes"
+```
 
 ## Shortcuts
 

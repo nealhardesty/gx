@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -35,14 +36,18 @@ func Run(opts Options) int {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "gx - Convert natural language to shell commands\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: gx [options] [prompt]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: gx [options] [prompt] [-]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nStdin Support:\n")
+		fmt.Fprintf(os.Stderr, "  -               Read additional input from stdin and append to prompt\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  gx \"find all large files over 100mb\"\n")
 		fmt.Fprintf(os.Stderr, "  gx -x                    # Execute staged command\n")
 		fmt.Fprintf(os.Stderr, "  gx -y \"list docker containers\"\n")
 		fmt.Fprintf(os.Stderr, "  gx -p \"list files\"       # Print prompt without sending\n")
+		fmt.Fprintf(os.Stderr, "  cat error.log | gx - \"explain this error\"   # Read from stdin\n")
+		fmt.Fprintf(os.Stderr, "  docker ps | gx -         # Use only stdin as prompt\n")
 		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
 		fmt.Fprintf(os.Stderr, "  GX_MODEL        Gemini model to use (default: gemini-2.5-flash-lite)\n")
 		fmt.Fprintf(os.Stderr, "  GX_HISTORY      Max history entries (default: 10)\n")
@@ -88,7 +93,39 @@ func Run(opts Options) int {
 	}
 
 	// Get prompt from arguments
-	prompt := strings.Join(flag.Args(), " ")
+	args := flag.Args()
+	
+	// Check if "-" is in the arguments to read from stdin
+	hasStdinFlag := false
+	promptArgs := []string{}
+	for _, arg := range args {
+		if arg == "-" {
+			hasStdinFlag = true
+		} else {
+			promptArgs = append(promptArgs, arg)
+		}
+	}
+	
+	// Build the prompt from non-"-" arguments
+	prompt := strings.Join(promptArgs, " ")
+	
+	// Read from stdin if "-" was specified
+	if hasStdinFlag {
+		stdinBytes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
+			return 1
+		}
+		stdinContent := strings.TrimSpace(string(stdinBytes))
+		
+		// Append stdin content to the prompt
+		if prompt == "" {
+			prompt = stdinContent
+		} else {
+			prompt = prompt + "\n\n---\n\n" + stdinContent
+		}
+	}
+	
 	if prompt == "" {
 		flag.Usage()
 		return 1
