@@ -133,6 +133,7 @@
   - `make release` - Create a release (tag, build, changelog update)
 - Keep version in sync with git tags when releasing
 - Update CHANGELOG.md when version changes
+- CRITICAL: version.go should be automatically patch version incremented with all code changes
 
 ## Code Quality
 **CRITICAL: DRY (Don't Repeat Yourself) is an absolute requirement**
