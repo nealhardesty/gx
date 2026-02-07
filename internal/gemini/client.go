@@ -336,6 +336,140 @@ func (c *Client) processResponse(ctx context.Context, chat *genai.ChatSession, r
 	}
 }
 
+// collectEnvironment collects and formats relevant environment variables for the system prompt.
+// Returns a formatted string with platform-appropriate environment variables.
+func (c *Client) collectEnvironment() string {
+	var envVars []string
+	
+	// Helper to safely get and format env var
+	getEnv := func(key string) (string, bool) {
+		val := os.Getenv(key)
+		if val == "" {
+			return "", false
+		}
+		return val, true
+	}
+	
+	// Helper to sanitize sensitive values
+	sanitize := func(key, val string) string {
+		keyUpper := strings.ToUpper(key)
+		sensitivePatterns := []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"}
+		for _, pattern := range sensitivePatterns {
+			if strings.Contains(keyUpper, pattern) {
+				return "[REDACTED]"
+			}
+		}
+		return val
+	}
+	
+	// Helper to truncate long values (like PATH)
+	truncate := func(val string, maxLen int) string {
+		if len(val) <= maxLen {
+			return val
+		}
+		return val[:maxLen] + " (truncated)"
+	}
+	
+	// Cross-platform variables
+	if val, ok := getEnv("GX_MODEL"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GX_MODEL: %s", sanitize("GX_MODEL", val)))
+	}
+	if val, ok := getEnv("GX_HISTORY"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GX_HISTORY: %s", sanitize("GX_HISTORY", val)))
+	}
+	if val, ok := getEnv("GX_PROMPT_OUTPUT"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GX_PROMPT_OUTPUT: %s", sanitize("GX_PROMPT_OUTPUT", val)))
+	}
+	
+	// Platform-specific variables
+	if runtime.GOOS == "windows" {
+		// Windows-specific
+		if val, ok := getEnv("USERPROFILE"); ok {
+			envVars = append(envVars, fmt.Sprintf("- USERPROFILE: %s", sanitize("USERPROFILE", val)))
+		}
+		if val, ok := getEnv("USERNAME"); ok {
+			envVars = append(envVars, fmt.Sprintf("- USERNAME: %s", sanitize("USERNAME", val)))
+		}
+		if val, ok := getEnv("ComSpec"); ok {
+			envVars = append(envVars, fmt.Sprintf("- ComSpec: %s", sanitize("ComSpec", val)))
+		}
+		if val, ok := getEnv("PSModulePath"); ok {
+			envVars = append(envVars, fmt.Sprintf("- PSModulePath: %s", truncate(sanitize("PSModulePath", val), 200)))
+		}
+		if val, ok := getEnv("TEMP"); ok {
+			envVars = append(envVars, fmt.Sprintf("- TEMP: %s", sanitize("TEMP", val)))
+		} else if val, ok := getEnv("TMP"); ok {
+			envVars = append(envVars, fmt.Sprintf("- TMP: %s", sanitize("TMP", val)))
+		}
+	} else {
+		// Unix/Linux/macOS
+		if val, ok := getEnv("HOME"); ok {
+			envVars = append(envVars, fmt.Sprintf("- HOME: %s", sanitize("HOME", val)))
+		}
+		if val, ok := getEnv("USER"); ok {
+			envVars = append(envVars, fmt.Sprintf("- USER: %s", sanitize("USER", val)))
+		} else if val, ok := getEnv("LOGNAME"); ok {
+			envVars = append(envVars, fmt.Sprintf("- LOGNAME: %s", sanitize("LOGNAME", val)))
+		}
+		if val, ok := getEnv("SHELL"); ok {
+			envVars = append(envVars, fmt.Sprintf("- SHELL: %s", sanitize("SHELL", val)))
+		}
+		if val, ok := getEnv("PWD"); ok {
+			envVars = append(envVars, fmt.Sprintf("- PWD: %s", sanitize("PWD", val)))
+		}
+	}
+	
+	// Common variables (both platforms)
+	if val, ok := getEnv("PATH"); ok {
+		envVars = append(envVars, fmt.Sprintf("- PATH: %s", truncate(sanitize("PATH", val), 300)))
+	}
+	if val, ok := getEnv("GOPATH"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GOPATH: %s", sanitize("GOPATH", val)))
+	}
+	if val, ok := getEnv("GOROOT"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GOROOT: %s", sanitize("GOROOT", val)))
+	}
+	if val, ok := getEnv("DOCKER_HOST"); ok {
+		envVars = append(envVars, fmt.Sprintf("- DOCKER_HOST: %s", sanitize("DOCKER_HOST", val)))
+	}
+	if val, ok := getEnv("KUBECONFIG"); ok {
+		envVars = append(envVars, fmt.Sprintf("- KUBECONFIG: %s", sanitize("KUBECONFIG", val)))
+	}
+	if val, ok := getEnv("AWS_PROFILE"); ok {
+		envVars = append(envVars, fmt.Sprintf("- AWS_PROFILE: %s", sanitize("AWS_PROFILE", val)))
+	}
+	if val, ok := getEnv("AWS_REGION"); ok {
+		envVars = append(envVars, fmt.Sprintf("- AWS_REGION: %s", sanitize("AWS_REGION", val)))
+	}
+	if val, ok := getEnv("GCP_PROJECT"); ok {
+		envVars = append(envVars, fmt.Sprintf("- GCP_PROJECT: %s", sanitize("GCP_PROJECT", val)))
+	}
+	
+	if len(envVars) == 0 {
+		return ""
+	}
+	
+	return strings.Join(envVars, "\n")
+}
+
+// buildToolsDescription creates a formatted description of available tools for the system prompt.
+func (c *Client) buildToolsDescription() string {
+	if !c.tools.IsEnabled() {
+		return ""
+	}
+	
+	toolDescs := []string{
+		"- pwd: Get current working directory",
+		"- ls(path, recursive): List files and directories",
+		"- stat(path): Get detailed file information",
+		"- cat(path): Read file contents (max 100KB)",
+		"- ps: List running processes",
+		"- uptime: Get system uptime",
+	}
+	
+	return strings.Join(toolDescs, "\n")
+}
+
 // buildSystemInstruction creates the system instruction based on shell and platform.
 func (c *Client) buildSystemInstruction() string {
 	commentSyntax := "#"
@@ -360,6 +494,20 @@ func (c *Client) buildSystemInstruction() string {
 		warningSection = commentWarning + "\n\n"
 	}
 	
+	// Collect environment variables
+	envSection := c.collectEnvironment()
+	envText := ""
+	if envSection != "" {
+		envText = "\n\nENVIRONMENT:\n" + envSection
+	}
+	
+	// Build tools description
+	toolsSection := c.buildToolsDescription()
+	toolsText := ""
+	if toolsSection != "" {
+		toolsText = "\n\nAVAILABLE TOOLS:\n" + toolsSection
+	}
+	
 	instruction := fmt.Sprintf(`You are a shell command generator. Your task is to convert natural language requests into executable shell commands.
 
 %sCRITICAL RULES:
@@ -367,16 +515,17 @@ func (c *Client) buildSystemInstruction() string {
 2. Do not wrap output in code blocks or use markdown formatting.
 3. If you need to add comments, use the appropriate syntax for the shell: %s
 4. %s
-5. The command must be directly executable - copy-paste ready.
+5. The command must be directly executable - copy-paste ready. This is an absolute requirement no matter what.
 6. For multi-line commands, use appropriate line continuation for the shell.
 7. If a task cannot be accomplished with a shell command, explain briefly using shell comments.
+
+PAY ATTENTION:
+Again, the command must be directly executable - copy-paste ready. This is an absolute requirement no matter what.
 
 CONTEXT:
 - Shell: %s
 - Platform: %s
-- Operating System: %s
-
-You have access to tools for gathering context about the file system and running processes. Use them when needed to provide accurate commands.`, warningSection, commentSyntax, verboseInstruction, c.shell, c.platform, runtime.GOOS)
+- Operating System: %s%s%s`, warningSection, commentSyntax, verboseInstruction, c.shell, c.platform, runtime.GOOS, envText, toolsText)
 	
 	return instruction
 }
