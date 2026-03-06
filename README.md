@@ -2,7 +2,7 @@
 
 ![gx logo](gx.png)
 
-A lightning-fast CLI assistant that converts natural language into executable shell commands using Google Gemini (Vertex AI).
+A lightning-fast CLI assistant that converts natural language into executable shell commands using local or cloud LLMs via [easy-llm-wrapper](https://github.com/nealhardesty/easy-llm-wrapper).
 
 **Zero fluff.** Returns raw shell code, not chatty explanations.
 
@@ -10,41 +10,44 @@ A lightning-fast CLI assistant that converts natural language into executable sh
 
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────┐
-│ User Prompt │───▶│ Load Context │───▶│ Vertex AI   │───▶│ Stage to │
-│             │    │ ~/.gxhistory │    │ Gemini LLM  │    │ ~/.gx    │
-└─────────────┘    └──────────────┘    └─────────────┘    └──────────┘
-                                              │                 │
-                                              ▼                 ▼
-                                       ┌─────────────┐   ┌───────────┐
-                                       │ Tools       │   │ Execute   │
-                                       │ (files API) │   │ (-x / -y) │
-                                       └─────────────┘   └───────────┘
+│ User Prompt │───▶│ Load Context │───▶│ LLM         │───▶│ Stage to │
+│             │    │ ~/.gxhistory │    │ (Ollama or  │    │ ~/.gx    │
+└─────────────┘    └──────────────┘    │  OpenRouter)│    └──────────┘
+                                       └─────────────┘         │
+                                              ▲                 ▼
+                                              │           ┌───────────┐
+                                    ┌─────────────────┐   │ Execute   │
+                                    │ Pre-collected   │   │ (-x / -y) │
+                                    │ system context  │   └───────────┘
+                                    │ (pwd,ls,ps,...) │
+                                    └─────────────────┘
 ```
 
 **Generate → Cache → Execute** flow:
 1. **Prompt** — User passes natural language to `gx`
 2. **Context** — Loads last 2-3 turns from `~/.gxhistory` for follow-up awareness
-3. **Inference** — Sent to Vertex AI with strict system instruction (shell-type aware)
-4. **Stage** — Output saved to `~/.gx` for review
-5. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
+3. **System context** — Pre-collects `pwd`, `ls`, `ps`, `uptime` and injects into the system prompt
+4. **Inference** — Sent to Ollama or OpenRouter with strict system instruction (shell-type aware)
+5. **Stage** — Output saved to `~/.gx` for review
+6. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
 
 ## Installation
 
 **Prerequisites:**
 - [Go 1.21+](https://go.dev/)
-- Google Cloud Project with Vertex AI API enabled
-- [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) installed and configured
+- Ollama running locally **or** an OpenRouter API key
 
-**GCP Setup:**
+**Ollama setup (local):**
 ```bash
-# Authenticate with Google Cloud
-gcloud auth application-default login
-
-# Set your default GCP project (REQUIRED)
-gcloud config set project YOUR_PROJECT_ID
+# Install Ollama: https://ollama.com
+ollama pull llama3.2
+export OLLAMA_HOST=http://localhost:11434
 ```
 
-> **Note:** If you see `no project ID specified and failed to get default`, run the `gcloud config set project` command above with your GCP project ID.
+**OpenRouter setup (cloud):**
+```bash
+export OPENROUTER_API_KEY=your_api_key_here
+```
 
 **Build from source:**
 ```bash
@@ -55,10 +58,6 @@ make build
 go build -o gx .
 go build -o gxx ./cmd/gxx
 sudo mv gx gxx /usr/local/bin/   # Linux/macOS
-
-# Or on Windows (PowerShell)
-go build -o gx.exe .
-go build -o gxx.exe ./cmd/gxx
 ```
 
 **Or install directly:**
@@ -69,10 +68,6 @@ go install github.com/nealhardesty/gx/cmd/gxx@latest
 
 # Or use make install (builds and installs both)
 make install
-
-# Then configure gcloud (if not already done)
-gcloud auth application-default login
-gcloud config set project YOUR_PROJECT_ID
 ```
 
 ## Usage
@@ -109,8 +104,9 @@ git diff | gx -  # Use stdin as entire prompt
 | `-y` | YOLO mode — execute immediately (no staging review) |
 | `-v` | Verbose — include detailed comments in output |
 | `-c` | Clear history and staged commands |
-| `-n` | Disable tools (no file system access for LLM) |
+| `-n` | Disable context pre-collection (no system context injected) |
 | `-p` | Print the prompt that would be sent to the LLM (don't send it) |
+| `-D` | Debug mode — dump all activity to stderr, each line prefixed with `#`. Implies `-v`. |
 | `--version` | Display version information |
 
 ### Stdin Support
@@ -140,31 +136,30 @@ The `gxx` command is a convenience shortcut that automatically generates and exe
 ## Storage
 
 | File | Purpose |
-|------|---------|
+|------|---------|\
 | `~/.gx` | Latest generated command (staging area) |
 | `~/.gxhistory` | JSON log of recent prompt/response pairs |
 
-## Tools
-
-The LLM has access to **readonly** tools for context gathering:
-
-| Tool | Description |
-|------|-------------|
-| `pwd` | Current working directory |
-| `ls` | List directory contents |
-| `ls -R` | Recursive directory listing |
-| `stat` | File/directory metadata |
-| `cat` | Read file contents (max 100KB) |
-| `ps` | Running processes |
-| `uptime` | System uptime |
-
-Disable all tools with `-n` flag.
-
 ## Shell Aware
 
-gx is aware of the shell that is running as the parent, be it 'sh', 'bash', 'zsh', 'powershell'
+gx automatically detects the shell running as its parent (`sh`, `bash`, `zsh`, `powershell`, `cmd`) and tailors output accordingly — correct comment syntax, line continuation style, and idioms per shell.
 
-Obviously, the context of the current platform (mac, linux, wsl2, powershell/windows cmd) and the operating system (ubuntu, fedora, windows, windows/wsl2) should be provided in context to the prompt.
+Platform and OS are also detected: macOS, Linux, WSL2, and Windows (PowerShell/CMD) are all handled.
+
+## Environment Context
+
+On every request, gx pre-collects system context (current directory listing, running processes, uptime) and injects it into the LLM system prompt so it can generate accurate, context-aware commands. Disable with `-n`.
+
+Additionally, relevant environment variables are automatically included:
+
+| Category | Variables Collected |
+|----------|-------------------|
+| Unix/Linux/macOS | `HOME`, `USER`/`LOGNAME`, `SHELL`, `PWD` |
+| Windows | `USERPROFILE`, `USERNAME`, `ComSpec`, `PSModulePath`, `TEMP`/`TMP` |
+| Common | `PATH`, `GOPATH`, `GOROOT`, `DOCKER_HOST`, `KUBECONFIG`, `AWS_PROFILE`, `AWS_REGION`, `GCP_PROJECT` |
+| gx config | `GX_MODEL`, `GX_HISTORY`, `GX_PROMPT_OUTPUT` |
+
+Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`) are automatically redacted. Long values like `PATH` are truncated.
 
 ## Configuration
 
@@ -172,20 +167,48 @@ Obviously, the context of the current platform (mac, linux, wsl2, powershell/win
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GX_MODEL` | Gemini model to use | `gemini-2.5-flash-lite` |
+| `OPENROUTER_API_KEY` | OpenRouter API key — enables OpenRouter provider (takes priority over Ollama) | — |
+| `OLLAMA_HOST` | Ollama base URL — enables Ollama provider | — |
+| `GX_MODEL` | Model override (takes priority over `MODEL`) | provider default |
+| `MODEL` | Model override | provider default |
 | `GX_HISTORY` | Max history entries | `10` |
 | `GX_PROMPT_OUTPUT` | Path to write prompt logs for debugging | `~/.gxprompt` |
 
+**Provider priority:** `OPENROUTER_API_KEY` > `OLLAMA_HOST`
+
+**Default models:** `llama3.2` (Ollama) · `anthropic/claude-3-haiku` (OpenRouter)
+
 ### Debugging
 
-Use the `-p` flag to see exactly what prompt is being sent to the LLM:
+Use `-D` for a full diagnostic dump to stderr. Every line is prefixed with `#` (shell comment syntax) so output remains copy-paste safe. `-D` also implies `-v` (verbose comments in the generated command):
+
+```bash
+gx -D "list files in current directory"
+# provider: openrouter
+# model:    anthropic/claude-3-haiku
+# shell:    zsh
+# platform: wsl2/amd64
+# tools:    true
+# tool pwd:
+# /home/neal/dev/gx
+# tool ls:
+# d .claude (0 bytes)
+# - AGENTS.md (4096 bytes)
+# ...
+# prompt:
+# list files in current directory
+# sending request...
+# response:
+# ls -la
+ls -la
+```
+
+Use `-p` to print the full prompt (system instruction + history + user message) without sending it to the LLM:
 ```bash
 gx -p "list files in current directory"
 ```
 
-This will print the full prompt including system instructions, history context, and your input without actually sending it to the LLM.
-
-Prompt logs are automatically written to the file specified by `GX_PROMPT_OUTPUT` (default: `~/.gxprompt`) for every request, showing the complete conversation flow including tool calls and responses.
+Prompt logs are automatically written to `~/.gxprompt` (or the path in `GX_PROMPT_OUTPUT`) for every request.
 
 ## Project Structure
 
@@ -197,47 +220,48 @@ gx/
 ├── go.mod / go.sum      # Dependencies
 ├── cmd/
 │   └── gxx/
-│       └── main.go      # gxx CLI entry point (thin wrapper with -x flag)
+│       └── main.go      # gxx CLI entry point (thin wrapper with -y flag)
 └── internal/
     ├── cli/
     │   └── cli.go       # Shared CLI logic (used by both gx and gxx)
     ├── version/
     │   └── version.go   # Semantic version constant
-    ├── gemini/
-    │   └── client.go     # Vertex AI client, system prompts
+    ├── llm/
+    │   └── client.go    # LLM client wrapper (easy-llm-wrapper + system prompt logic)
     ├── history/
     │   └── history.go   # ~/.gxhistory management
     └── tools/
-        ├── registry.go  # Tool registration & dispatch
-        ├── files.go     # File system tools
+        ├── registry.go  # Tool dispatch for context pre-collection
+        ├── files.go     # File system tools (pwd, ls, stat, cat)
         └── process.go   # Process tools (ps, uptime)
 ```
 
 ## Technical Details
 
-- **SDK:** `cloud.google.com/go/vertexai/genai`
-- **Model:** `gemini-2.5-flash-lite` (optimized for speed/latency)
+- **SDK:** [`github.com/nealhardesty/easy-llm-wrapper`](https://github.com/nealhardesty/easy-llm-wrapper)
+- **Providers:** Ollama (local) or OpenRouter (cloud) — auto-selected from environment
 - **System Instruction:** Shell-type aware prompt that returns raw commands only — no markdown, no backticks, no explanations. Comments use shell-appropriate syntax.
-- **Context:** OS, platform, and shell type automatically detected and passed to the LLM
+- **Context:** OS, platform, shell type, environment variables, and pre-collected system state (pwd, ls, ps, uptime) are automatically passed to the LLM.
 
 ## Troubleshooting
 
-### "no project ID specified and failed to get default"
+### "no LLM provider configured"
 
-This error means gcloud doesn't have a default project configured. Fix it by running:
+Set either `OPENROUTER_API_KEY` or `OLLAMA_HOST`:
 
 ```bash
-gcloud config set project YOUR_PROJECT_ID
+# For Ollama (local)
+export OLLAMA_HOST=http://localhost:11434
+
+# For OpenRouter (cloud)
+export OPENROUTER_API_KEY=your_key_here
 ```
 
-To find your project ID, run `gcloud projects list` or check the [Google Cloud Console](https://console.cloud.google.com/).
+### "failed to create LLM client"
 
-### "failed to create Gemini client"
-
-Ensure you have:
-1. Authenticated: `gcloud auth application-default login`
-2. Enabled Vertex AI API in your GCP project
-3. Set your project: `gcloud config set project YOUR_PROJECT_ID`
+Ensure the configured provider is reachable:
+- **Ollama:** `ollama list` — confirm Ollama is running and `OLLAMA_HOST` is correct
+- **OpenRouter:** confirm `OPENROUTER_API_KEY` is valid at [openrouter.ai](https://openrouter.ai)
 
 ## License
 

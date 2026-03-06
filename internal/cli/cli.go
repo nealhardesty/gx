@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nealhardesty/gx/internal/gemini"
 	"github.com/nealhardesty/gx/internal/history"
+	"github.com/nealhardesty/gx/internal/llm"
 )
 
 // Options configures the CLI behavior.
@@ -32,6 +32,7 @@ func Run(opts Options) int {
 	clearFlag := flag.Bool("c", false, "Clear history and staged commands")
 	noToolsFlag := flag.Bool("n", false, "Disable LLM tools (no file system access)")
 	printPromptFlag := flag.Bool("p", false, "Print the prompt that would be sent to the LLM (don't send it)")
+	debugFlag := flag.Bool("D", false, "Debug mode - dump all activity to stderr (lines prefixed with #)")
 	versionFlag := flag.Bool("version", false, "Show version information")
 
 	flag.Usage = func() {
@@ -48,16 +49,25 @@ func Run(opts Options) int {
 		fmt.Fprintf(os.Stderr, "  gx -p \"list files\"       # Print prompt without sending\n")
 		fmt.Fprintf(os.Stderr, "  cat error.log | gx - \"explain this error\"   # Read from stdin\n")
 		fmt.Fprintf(os.Stderr, "  docker ps | gx -         # Use only stdin as prompt\n")
+		fmt.Fprintf(os.Stderr, "\nDebug:\n")
+		fmt.Fprintf(os.Stderr, "  -D                  Dump all activity to stderr (provider, tools, prompt, response)\n")
+		fmt.Fprintf(os.Stderr, "                      All lines are prefixed with # (shell comment syntax)\n")
+		fmt.Fprintf(os.Stderr, "                      Implies -v (verbose comments in output)\n")
 		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
-		fmt.Fprintf(os.Stderr, "  GX_MODEL        Gemini model to use (default: gemini-2.5-flash-lite)\n")
-		fmt.Fprintf(os.Stderr, "  GX_HISTORY      Max history entries (default: 10)\n")
-		fmt.Fprintf(os.Stderr, "  GX_PROMPT_OUTPUT  Path to write prompt logs (default: ~/.gxprompt)\n")
-		fmt.Fprintf(os.Stderr, "\nGCP Setup (required):\n")
-		fmt.Fprintf(os.Stderr, "  gcloud auth application-default login\n")
-		fmt.Fprintf(os.Stderr, "  gcloud config set project PROJECT_ID\n")
+		fmt.Fprintf(os.Stderr, "  OPENROUTER_API_KEY  OpenRouter API key (enables OpenRouter provider)\n")
+		fmt.Fprintf(os.Stderr, "  OLLAMA_HOST         Ollama base URL, e.g. http://localhost:11434\n")
+		fmt.Fprintf(os.Stderr, "  GX_MODEL            Model override (takes priority over MODEL)\n")
+		fmt.Fprintf(os.Stderr, "  MODEL               Model override\n")
+		fmt.Fprintf(os.Stderr, "  GX_HISTORY          Max history entries (default: 10)\n")
+		fmt.Fprintf(os.Stderr, "  GX_PROMPT_OUTPUT    Path to write prompt logs (default: ~/.gxprompt)\n")
 	}
 
 	flag.Parse()
+
+	// -D implies -v
+	if *debugFlag {
+		*verboseFlag = true
+	}
 
 	// Handle version flag
 	if *versionFlag {
@@ -94,7 +104,7 @@ func Run(opts Options) int {
 
 	// Get prompt from arguments
 	args := flag.Args()
-	
+
 	// Check if "-" is in the arguments to read from stdin
 	hasStdinFlag := false
 	promptArgs := []string{}
@@ -105,10 +115,10 @@ func Run(opts Options) int {
 			promptArgs = append(promptArgs, arg)
 		}
 	}
-	
+
 	// Build the prompt from non-"-" arguments
 	prompt := strings.Join(promptArgs, " ")
-	
+
 	// Read from stdin if "-" was specified
 	if hasStdinFlag {
 		stdinBytes, err := io.ReadAll(os.Stdin)
@@ -117,7 +127,7 @@ func Run(opts Options) int {
 			return 1
 		}
 		stdinContent := strings.TrimSpace(string(stdinBytes))
-		
+
 		// Append stdin content to the prompt
 		if prompt == "" {
 			prompt = stdinContent
@@ -125,7 +135,7 @@ func Run(opts Options) int {
 			prompt = prompt + "\n\n---\n\n" + stdinContent
 		}
 	}
-	
+
 	if prompt == "" {
 		flag.Usage()
 		return 1
@@ -133,16 +143,15 @@ func Run(opts Options) int {
 
 	// Handle print prompt flag
 	if *printPromptFlag {
-		ctx := context.Background()
-		client, err := gemini.NewClient(ctx, gemini.Config{
+		client, err := llm.NewClient(llm.Config{
 			Verbose: *verboseFlag,
 			NoTools: *noToolsFlag,
+			Debug:   *debugFlag,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-		defer client.Close()
 
 		// Get recent history for context
 		histContext, err := histMgr.GetRecentContext(3)
@@ -159,7 +168,7 @@ func Run(opts Options) int {
 
 	// Generate command
 	ctx := context.Background()
-	command, err := generateCommand(ctx, prompt, *verboseFlag, *noToolsFlag, histMgr)
+	command, err := generateCommand(ctx, prompt, *verboseFlag, *noToolsFlag, *debugFlag, histMgr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -192,26 +201,22 @@ func Run(opts Options) int {
 	return 0
 }
 
-// generateCommand uses Gemini to generate a shell command from the prompt.
-func generateCommand(ctx context.Context, prompt string, verbose, noTools bool, histMgr *history.Manager) (string, error) {
-	// Get recent history for context
+// generateCommand uses the LLM to generate a shell command from the prompt.
+func generateCommand(ctx context.Context, prompt string, verbose, noTools, debug bool, histMgr *history.Manager) (string, error) {
 	histContext, err := histMgr.GetRecentContext(3)
 	if err != nil {
-		// Non-fatal, continue without history
 		histContext = nil
 	}
 
-	// Create Gemini client
-	client, err := gemini.NewClient(ctx, gemini.Config{
+	client, err := llm.NewClient(llm.Config{
 		Verbose: verbose,
 		NoTools: noTools,
+		Debug:   debug,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create client: %w", err)
 	}
-	defer client.Close()
 
-	// Generate the command
 	return client.Generate(ctx, prompt, histContext)
 }
 

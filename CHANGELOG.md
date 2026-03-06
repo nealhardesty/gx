@@ -29,6 +29,18 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **2026-03-06**: Added `-D` debug mode flag — dumps all activity to stderr with every line prefixed with `#` (shell comment syntax). Shows provider, model, shell, platform, each pre-collected tool result (truncated for ps/ls), history entries, the prompt, and the response. Automatically implies `-v` (verbose comments in generated output).
+
+### Changed
+- **2026-03-06**: Replaced Google Vertex AI / Gemini backend with [`easy-llm-wrapper`](https://github.com/nealhardesty/easy-llm-wrapper) — gx now supports Ollama (local) and OpenRouter (cloud) instead of requiring GCP credentials and a Vertex AI project. Provider is auto-selected from environment: `OPENROUTER_API_KEY` (priority) or `OLLAMA_HOST`. Model override via `GX_MODEL` or `MODEL`.
+- **2026-03-06**: Replaced dynamic LLM tool calling with pre-collected system context — `pwd`, `ls`, `ps`, and `uptime` output is now gathered upfront and injected into the system prompt rather than offered as callable tools. Same information, no round-trips, no function-calling dependency.
+- **2026-03-06**: Removed `internal/gemini/` package — replaced by `internal/llm/` which wraps `easy-llm-wrapper` with gx-specific system prompt logic, shell/platform detection, environment collection, and context pre-collection.
+- **2026-03-06**: Simplified `internal/tools/registry.go` — removed all Gemini-specific code (`GetToolDefinitions`, `ParseFunctionCall`, `genai` import). Registry now only handles tool dispatch for pre-collection.
+- **2026-03-06**: Dramatically simplified `go.mod` — removed 30+ transitive Google Cloud / gRPC / protobuf dependencies. Single runtime dependency: `github.com/nealhardesty/easy-llm-wrapper`.
+- **2026-03-06**: Updated `README.md` — rewrote for new provider model (Ollama/OpenRouter), removed all GCP/gcloud setup instructions, updated architecture diagram, configuration table, troubleshooting section, and project structure.
+- **2026-03-06**: Updated `README.md` — documented the environment variable context collection feature (`HOME`, `SHELL`, `PATH`, `GOPATH`, `DOCKER_HOST`, `KUBECONFIG`, `AWS_PROFILE`, `AWS_REGION`, `GCP_PROJECT`, etc. are automatically collected and passed to the LLM as context); rewrote "Shell Aware" section to be concrete and accurate; added new "Environment Context" section with full table of collected variables and redaction behavior.
+
+### Added
 - **2026-02-05**: Added stdin input support with `-` command-line option — when `-` is passed as a standalone argument, gx will read from stdin and append it to the prompt before sending. This enables piping file contents or command output directly into prompts (e.g., `cat error.log | gx - "explain this error"` or `docker ps | gx -`)
 - **2026-01-31**: Added `gx.png` logo to README.md — incorporated project logo at the top of the documentation
 - **2026-01-31**: Added `gxx` command shortcut — automatically includes `-y` flag (YOLO mode) for immediate generation and execution. Both `gx` and `gxx` binaries are now built and installed together.
