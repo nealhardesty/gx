@@ -13,8 +13,6 @@ import (
 	"strings"
 
 	elw "github.com/nealhardesty/easy-llm-wrapper"
-
-	"github.com/nealhardesty/gx/internal/history"
 )
 
 // Config holds configuration for the LLM client.
@@ -79,28 +77,14 @@ func (c *Client) debugf(format string, args ...any) {
 }
 
 // Generate generates a shell command from a natural language prompt.
-func (c *Client) Generate(ctx context.Context, prompt string, histContext []history.Entry) (string, error) {
+func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	systemPrompt := c.buildSystemInstruction()
 
-	c.debugf("history: %d entries", len(histContext))
-	for i, e := range histContext {
-		c.debugf("history[%d] user:      %s", i, e.Prompt)
-		c.debugf("history[%d] assistant: %s", i, e.Response)
-	}
 	c.debugf("prompt:\n%s", prompt)
 
-	// Build messages: history turns followed by current user prompt.
-	var messages []elw.Message
-	for _, entry := range histContext {
-		messages = append(messages,
-			elw.Message{Role: elw.RoleUser, Parts: []elw.Part{elw.TextPart(entry.Prompt)}},
-			elw.Message{Role: elw.RoleAssistant, Parts: []elw.Part{elw.TextPart(entry.Response)}},
-		)
+	messages := []elw.Message{
+		{Role: elw.RoleUser, Parts: []elw.Part{elw.TextPart(prompt)}},
 	}
-	messages = append(messages, elw.Message{
-		Role:  elw.RoleUser,
-		Parts: []elw.Part{elw.TextPart(prompt)},
-	})
 
 	c.debugf("sending request...")
 	resp, err := c.elw.Complete(ctx, elw.Request{
@@ -108,32 +92,23 @@ func (c *Client) Generate(ctx context.Context, prompt string, histContext []hist
 		Messages: messages,
 	})
 	if err != nil {
-		c.writePromptLog(systemPrompt, histContext, prompt, "")
+		c.writePromptLog(systemPrompt, prompt, "")
 		return "", fmt.Errorf("failed to generate response: %w", err)
 	}
 
 	result := strings.TrimSpace(resp.Text)
 	c.debugf("response:\n%s", result)
-	c.writePromptLog(systemPrompt, histContext, prompt, result)
+	c.writePromptLog(systemPrompt, prompt, result)
 	return result, nil
 }
 
 // BuildPrompt returns the full prompt that would be sent to the LLM, for the -p flag.
-func (c *Client) BuildPrompt(prompt string, histContext []history.Entry) string {
+func (c *Client) BuildPrompt(prompt string) string {
 	system := c.buildSystemInstruction()
-	var parts []string
-	parts = append(parts, fmt.Sprintf("SYSTEM:\n%s", system))
-
-	if len(histContext) > 0 {
-		var histText strings.Builder
-		histText.WriteString("HISTORY:\n")
-		for _, e := range histContext {
-			histText.WriteString(fmt.Sprintf("User: %s\nAssistant: %s\n", e.Prompt, e.Response))
-		}
-		parts = append(parts, histText.String())
+	parts := []string{
+		fmt.Sprintf("SYSTEM:\n%s", system),
+		fmt.Sprintf("USER:\n%s", prompt),
 	}
-
-	parts = append(parts, fmt.Sprintf("USER:\n%s", prompt))
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
@@ -215,9 +190,6 @@ func (c *Client) collectEnvironment() string {
 	// gx config vars
 	if val, ok := getEnv("GX_MODEL"); ok {
 		envVars = append(envVars, fmt.Sprintf("- GX_MODEL: %s", val))
-	}
-	if val, ok := getEnv("GX_HISTORY"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GX_HISTORY: %s", val))
 	}
 	if val, ok := getEnv("GX_PROMPT_OUTPUT"); ok {
 		envVars = append(envVars, fmt.Sprintf("- GX_PROMPT_OUTPUT: %s", val))
@@ -335,7 +307,7 @@ func detectPlatform() string {
 
 // writePromptLog writes the prompt log to a file for debugging.
 // Defaults to ~/.gxprompt; overridden by GX_PROMPT_OUTPUT.
-func (c *Client) writePromptLog(system string, histContext []history.Entry, prompt, response string) {
+func (c *Client) writePromptLog(system, prompt, response string) {
 	outputPath := os.Getenv("GX_PROMPT_OUTPUT")
 	if outputPath == "" {
 		homeDir, err := os.UserHomeDir()
@@ -351,12 +323,10 @@ func (c *Client) writePromptLog(system string, histContext []history.Entry, prom
 		outputPath = filepath.Join(homeDir, strings.TrimPrefix(outputPath, "~/"))
 	}
 
-	var parts []string
-	parts = append(parts, fmt.Sprintf("SYSTEM:\n%s", system))
-	for _, e := range histContext {
-		parts = append(parts, fmt.Sprintf("HISTORY TURN:\nUser: %s\nAssistant: %s", e.Prompt, e.Response))
+	parts := []string{
+		fmt.Sprintf("SYSTEM:\n%s", system),
+		fmt.Sprintf("USER:\n%s", prompt),
 	}
-	parts = append(parts, fmt.Sprintf("USER:\n%s", prompt))
 	if response != "" {
 		parts = append(parts, fmt.Sprintf("RESPONSE:\n%s", response))
 	}

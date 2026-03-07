@@ -29,7 +29,7 @@ func Run(opts Options) int {
 	executeFlag := flag.Bool("x", false, "Execute the staged command from ~/.gx")
 	yoloFlag := flag.Bool("y", opts.ForceYolo, "YOLO mode - generate and execute immediately")
 	verboseFlag := flag.Bool("v", false, "Verbose mode - include detailed comments")
-	clearFlag := flag.Bool("c", false, "Clear history and staged commands")
+	clearFlag := flag.Bool("c", false, "Clear staged command")
 	printPromptFlag := flag.Bool("p", false, "Print the prompt that would be sent to the LLM (don't send it)")
 	debugFlag := flag.Bool("D", false, "Debug mode - dump all activity to stderr (lines prefixed with #)")
 	versionFlag := flag.Bool("version", false, "Show version information")
@@ -57,7 +57,6 @@ func Run(opts Options) int {
 		fmt.Fprintf(os.Stderr, "  OLLAMA_HOST         Ollama base URL, e.g. http://localhost:11434\n")
 		fmt.Fprintf(os.Stderr, "  GX_MODEL            Model override (takes priority over MODEL)\n")
 		fmt.Fprintf(os.Stderr, "  MODEL               Model override\n")
-		fmt.Fprintf(os.Stderr, "  GX_HISTORY          Max history entries (default: 10)\n")
 		fmt.Fprintf(os.Stderr, "  GX_PROMPT_OUTPUT    Path to write prompt logs (default: ~/.gxprompt)\n")
 	}
 
@@ -87,7 +86,7 @@ func Run(opts Options) int {
 			fmt.Fprintf(os.Stderr, "Error clearing: %v\n", err)
 			return 1
 		}
-		fmt.Println("History and staged commands cleared.")
+		fmt.Println("Staged command cleared.")
 		return 0
 	}
 
@@ -150,23 +149,13 @@ func Run(opts Options) int {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-
-		// Get recent history for context
-		histContext, err := histMgr.GetRecentContext(3)
-		if err != nil {
-			// Non-fatal, continue without history
-			histContext = nil
-		}
-
-		// Build and print the prompt
-		fullPrompt := client.BuildPrompt(prompt, histContext)
-		fmt.Println(fullPrompt)
+		fmt.Println(client.BuildPrompt(prompt))
 		return 0
 	}
 
 	// Generate command
 	ctx := context.Background()
-	command, err := generateCommand(ctx, prompt, *verboseFlag, *debugFlag, histMgr)
+	command, err := generateCommand(ctx, prompt, *verboseFlag, *debugFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -178,11 +167,6 @@ func Run(opts Options) int {
 	// Stage the command
 	if err := histMgr.StageCommand(command); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to stage command: %v\n", err)
-	}
-
-	// Save to history
-	if err := histMgr.Append(prompt, command); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to save history: %v\n", err)
 	}
 
 	// YOLO mode - execute immediately
@@ -200,12 +184,7 @@ func Run(opts Options) int {
 }
 
 // generateCommand uses the LLM to generate a shell command from the prompt.
-func generateCommand(ctx context.Context, prompt string, verbose, debug bool, histMgr *history.Manager) (string, error) {
-	histContext, err := histMgr.GetRecentContext(3)
-	if err != nil {
-		histContext = nil
-	}
-
+func generateCommand(ctx context.Context, prompt string, verbose, debug bool) (string, error) {
 	client, err := llm.NewClient(llm.Config{
 		Verbose: verbose,
 		Debug:   debug,
@@ -214,7 +193,7 @@ func generateCommand(ctx context.Context, prompt string, verbose, debug bool, hi
 		return "", fmt.Errorf("failed to create client: %w", err)
 	}
 
-	return client.Generate(ctx, prompt, histContext)
+	return client.Generate(ctx, prompt)
 }
 
 // executeStaged executes the command staged in ~/.gx.

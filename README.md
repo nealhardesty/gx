@@ -9,24 +9,23 @@ A lightning-fast CLI assistant that converts natural language into executable sh
 ## Architecture
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────┐
-│ User Prompt │───▶│ Load Context │───▶│ LLM         │───▶│ Stage to │
-│             │    │ ~/.gxhistory │    │ (Ollama or  │    │ ~/.gx    │
-└─────────────┘    └──────────────┘    │  OpenRouter)│    └──────────┘
-                                       └─────────────┘         │
-                                                                ▼
-                                                          ┌───────────┐
-                                                          │ Execute   │
-                                                          │ (-x / -y) │
-                                                          └───────────┘
+┌─────────────┐    ┌─────────────┐    ┌──────────┐
+│ User Prompt │───▶│ LLM         │───▶│ Stage to │
+│             │    │ (Ollama or  │    │ ~/.gx    │
+└─────────────┘    │  OpenRouter)│    └──────────┘
+                   └─────────────┘         │
+                                           ▼
+                                     ┌───────────┐
+                                     │ Execute   │
+                                     │ (-x / -y) │
+                                     └───────────┘
 ```
 
-**Generate → Cache → Execute** flow:
+**Generate → Stage → Execute** flow:
 1. **Prompt** — User passes natural language to `gx`
-2. **Context** — Loads last 2-3 turns from `~/.gxhistory` for follow-up awareness
-3. **Inference** — Sent to Ollama or OpenRouter with a shell/platform/environment-aware system prompt
-4. **Stage** — Output saved to `~/.gx` for review
-5. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
+2. **Inference** — Sent to Ollama or OpenRouter with a shell/platform/environment-aware system prompt
+3. **Stage** — Output saved to `~/.gx` for review
+4. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
 
 ## Installation
 
@@ -79,9 +78,6 @@ gx -x
 # Shortcut: gxx automatically includes -y flag (YOLO mode)
 gxx "list docker containers"
 
-# Refine with context awareness
-gx "actually, only look in /var/log"
-
 # YOLO mode (generate and execute immediately)
 gx -y "list docker containers"
 
@@ -99,7 +95,7 @@ git diff | gx -  # Use stdin as entire prompt
 | `-x` | Execute command staged in `~/.gx` |
 | `-y` | YOLO mode — execute immediately (no staging review) |
 | `-v` | Verbose — include detailed comments in output |
-| `-c` | Clear history and staged commands |
+| `-c` | Clear staged command |
 | `-p` | Print the prompt that would be sent to the LLM (don't send it) |
 | `-D` | Debug mode — dump all activity to stderr, each line prefixed with `#`. Implies `-v`. |
 | `--version` | Display version information |
@@ -129,9 +125,8 @@ git diff | gx -y - "create a commit message for these changes"
 ## Storage
 
 | File | Purpose |
-|------|---------|\
+|------|---------|
 | `~/.gx` | Latest generated command (staging area) |
-| `~/.gxhistory` | JSON log of recent prompt/response pairs |
 
 ## Shell Aware
 
@@ -148,7 +143,7 @@ On every request, relevant environment variables are automatically collected and
 | Unix/Linux/macOS | `HOME`, `USER`/`LOGNAME`, `SHELL`, `PWD` |
 | Windows | `USERPROFILE`, `USERNAME`, `ComSpec`, `PSModulePath`, `TEMP`/`TMP` |
 | Common | `PATH`, `GOPATH`, `GOROOT`, `DOCKER_HOST`, `KUBECONFIG`, `AWS_PROFILE`, `AWS_REGION`, `GCP_PROJECT` |
-| gx config | `GX_MODEL`, `GX_HISTORY`, `GX_PROMPT_OUTPUT` |
+| gx config | `GX_MODEL`, `GX_PROMPT_OUTPUT` |
 
 Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`) are automatically redacted. Long values like `PATH` are truncated.
 
@@ -162,7 +157,6 @@ Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH
 | `OLLAMA_HOST` | Ollama base URL — enables Ollama provider | — |
 | `GX_MODEL` | Model override (takes priority over `MODEL`) | provider default |
 | `MODEL` | Model override | provider default |
-| `GX_HISTORY` | Max history entries | `10` |
 | `GX_PROMPT_OUTPUT` | Path to write prompt logs for debugging | `~/.gxprompt` |
 
 **Provider priority:** `OPENROUTER_API_KEY` > `OLLAMA_HOST`
@@ -179,7 +173,6 @@ gx -D "list files in current directory"
 # model:    anthropic/claude-3-haiku
 # shell:    zsh
 # platform: wsl2/amd64
-# history: 0 entries
 # prompt:
 # list files in current directory
 # sending request...
@@ -214,7 +207,7 @@ gx/
     ├── llm/
     │   └── client.go    # LLM client (easy-llm-wrapper + system prompt logic)
     └── history/
-        └── history.go   # ~/.gxhistory management
+        └── history.go   # ~/.gx staging file management
 ```
 
 ## Technical Details

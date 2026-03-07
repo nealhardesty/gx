@@ -28,6 +28,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **2026-03-07**: Removed conversation history (`~/.gxhistory`) entirely. `gx` no longer stores or replays prior prompt/response pairs. Only the last generated command is kept in `~/.gx` for staging. Removed `GX_HISTORY` env var, `history.Entry` type, `Load`/`Save`/`Append`/`GetRecentContext` methods, and all related logic from `cli.go` and `llm/client.go`. The `-c` flag now clears only the staged command.
+
+
+
 ### Added
 - **2026-03-06**: Added `-D` debug mode flag — dumps all activity to stderr with every line prefixed with `#` (shell comment syntax). Shows provider, model, shell, platform, history entries, the prompt, and the response. Automatically implies `-v` (verbose comments in generated output).
 

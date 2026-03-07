@@ -2,4 +2,4 @@ package version
 
 // Version is the current semantic version of the application.
 // Follow SemVer: MAJOR.MINOR.PATCH
-const Version = "1.2.3"
+const Version = "1.2.4"
