@@ -1,6 +1,6 @@
 // Package llm provides the LLM client for shell command generation.
 // It wraps easy-llm-wrapper with gx-specific system prompt logic,
-// shell/platform detection, environment collection, and context pre-collection.
+// shell/platform detection, and environment collection.
 package llm
 
 import (
@@ -15,20 +15,17 @@ import (
 	elw "github.com/nealhardesty/easy-llm-wrapper"
 
 	"github.com/nealhardesty/gx/internal/history"
-	"github.com/nealhardesty/gx/internal/tools"
 )
 
 // Config holds configuration for the LLM client.
 type Config struct {
 	Verbose bool
-	NoTools bool
 	Debug   bool
 }
 
 // Client wraps easy-llm-wrapper with gx-specific system prompt and context logic.
 type Client struct {
 	elw      *elw.Client
-	tools    *tools.Registry
 	verbose  bool
 	debug    bool
 	shell    string
@@ -36,13 +33,17 @@ type Client struct {
 }
 
 // NewClient creates a new Client, auto-detecting provider from environment variables.
-// Provider priority: OPENROUTER_API_KEY > OLLAMA_HOST.
+// Provider priority: claude CLI > OPENROUTER_API_KEY > OLLAMA_HOST.
 // Model priority: GX_MODEL > MODEL > provider default.
 func NewClient(cfg Config) (*Client, error) {
-	elwCfg, err := resolveConfig()
+	elwCfg, err := elw.ConfigFromEnv()
 	if err != nil {
 		return nil, err
 	}
+	if model := os.Getenv("GX_MODEL"); model != "" {
+		elwCfg.Model = model
+	}
+	elwCfg.Debug = cfg.Debug
 
 	elwClient, err := elw.NewClientWithConfig(elwCfg)
 	if err != nil {
@@ -51,7 +52,6 @@ func NewClient(cfg Config) (*Client, error) {
 
 	c := &Client{
 		elw:      elwClient,
-		tools:    tools.NewRegistry(!cfg.NoTools),
 		verbose:  cfg.Verbose,
 		debug:    cfg.Debug,
 		shell:    detectShell(),
@@ -62,7 +62,6 @@ func NewClient(cfg Config) (*Client, error) {
 	c.debugf("model:    %s", c.elw.Model())
 	c.debugf("shell:    %s", c.shell)
 	c.debugf("platform: %s", c.platform)
-	c.debugf("tools:    %v", c.tools.IsEnabled())
 
 	return c, nil
 }
@@ -77,48 +76,6 @@ func (c *Client) debugf(format string, args ...any) {
 	for _, line := range strings.Split(msg, "\n") {
 		fmt.Fprintf(os.Stderr, "# %s\n", line)
 	}
-}
-
-// resolveConfig builds an elw.Config from environment variables.
-// GX_MODEL takes priority over MODEL; OPENROUTER_API_KEY takes priority over OLLAMA_HOST.
-func resolveConfig() (elw.Config, error) {
-	model := os.Getenv("GX_MODEL")
-	if model == "" {
-		model = os.Getenv("MODEL")
-	}
-
-	if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
-		if model == "" {
-			model = "anthropic/claude-3-haiku"
-		}
-		return elw.Config{
-			Provider: elw.ProviderOpenRouter,
-			Model:    model,
-			BaseURL:  "https://openrouter.ai/api/v1",
-			APIKey:   key,
-		}, nil
-	}
-
-	if host := os.Getenv("OLLAMA_HOST"); host != "" {
-		if model == "" {
-			model = "llama3.2"
-		}
-		return elw.Config{
-			Provider: elw.ProviderOllama,
-			Model:    model,
-			BaseURL:  normalizeURL(host),
-		}, nil
-	}
-
-	return elw.Config{}, fmt.Errorf("no LLM provider configured: set OPENROUTER_API_KEY or OLLAMA_HOST")
-}
-
-// normalizeURL ensures a URL has an http:// scheme.
-func normalizeURL(u string) string {
-	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return "http://" + u
-	}
-	return u
 }
 
 // Generate generates a shell command from a natural language prompt.
@@ -180,49 +137,6 @@ func (c *Client) BuildPrompt(prompt string, histContext []history.Entry) string 
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-// collectToolContext pre-collects context from the tools (pwd, ls, ps, uptime)
-// and returns it as a formatted string for injection into the system prompt.
-// Returns an empty string when tools are disabled.
-func (c *Client) collectToolContext() string {
-	if !c.tools.IsEnabled() {
-		return ""
-	}
-
-	var sections []string
-
-	if cwd, err := c.tools.ExecuteTool("pwd", nil); err == nil {
-		c.debugf("tool pwd:\n%s", cwd)
-		sections = append(sections, fmt.Sprintf("CURRENT DIRECTORY: %s", cwd))
-	}
-
-	if listing, err := c.tools.ExecuteTool("ls", map[string]any{"path": ".", "recursive": false}); err == nil && listing != "" {
-		c.debugf("tool ls:\n%s", debugTruncate(listing, 20))
-		sections = append(sections, fmt.Sprintf("DIRECTORY CONTENTS:\n%s", listing))
-	}
-
-	if ps, err := c.tools.ExecuteTool("ps", nil); err == nil {
-		c.debugf("tool ps:\n%s", debugTruncate(ps, 10))
-		sections = append(sections, fmt.Sprintf("RUNNING PROCESSES:\n%s", ps))
-	}
-
-	if up, err := c.tools.ExecuteTool("uptime", nil); err == nil {
-		c.debugf("tool uptime:\n%s", up)
-		sections = append(sections, fmt.Sprintf("SYSTEM UPTIME: %s", up))
-	}
-
-	return strings.Join(sections, "\n\n")
-}
-
-// debugTruncate returns at most maxLines lines of s, with a note if truncated.
-func debugTruncate(s string, maxLines int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= maxLines {
-		return s
-	}
-	remaining := len(lines) - maxLines
-	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n... (%d more lines)", remaining)
-}
-
 // buildSystemInstruction creates the system instruction for the LLM.
 func (c *Client) buildSystemInstruction() string {
 	commentSyntax := "#"
@@ -246,12 +160,6 @@ func (c *Client) buildSystemInstruction() string {
 		envText = "\n\nENVIRONMENT:\n" + envSection
 	}
 
-	toolContext := c.collectToolContext()
-	toolText := ""
-	if toolContext != "" {
-		toolText = "\n\nSYSTEM CONTEXT:\n" + toolContext
-	}
-
 	return fmt.Sprintf(`You are a shell command generator. Your task is to convert natural language requests into executable shell commands.
 
 %sCRITICAL RULES:
@@ -269,9 +177,9 @@ Again, the command must be directly executable - copy-paste ready. This is an ab
 CONTEXT:
 - Shell: %s
 - Platform: %s
-- Operating System: %s%s%s`,
+- Operating System: %s%s`,
 		commentWarning, commentSyntax, verboseInstruction,
-		c.shell, c.platform, runtime.GOOS, envText, toolText)
+		c.shell, c.platform, runtime.GOOS, envText)
 }
 
 // collectEnvironment collects and formats relevant environment variables for the system prompt.

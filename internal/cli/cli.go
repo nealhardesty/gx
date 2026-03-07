@@ -30,7 +30,6 @@ func Run(opts Options) int {
 	yoloFlag := flag.Bool("y", opts.ForceYolo, "YOLO mode - generate and execute immediately")
 	verboseFlag := flag.Bool("v", false, "Verbose mode - include detailed comments")
 	clearFlag := flag.Bool("c", false, "Clear history and staged commands")
-	noToolsFlag := flag.Bool("n", false, "Disable LLM tools (no file system access)")
 	printPromptFlag := flag.Bool("p", false, "Print the prompt that would be sent to the LLM (don't send it)")
 	debugFlag := flag.Bool("D", false, "Debug mode - dump all activity to stderr (lines prefixed with #)")
 	versionFlag := flag.Bool("version", false, "Show version information")
@@ -50,7 +49,7 @@ func Run(opts Options) int {
 		fmt.Fprintf(os.Stderr, "  cat error.log | gx - \"explain this error\"   # Read from stdin\n")
 		fmt.Fprintf(os.Stderr, "  docker ps | gx -         # Use only stdin as prompt\n")
 		fmt.Fprintf(os.Stderr, "\nDebug:\n")
-		fmt.Fprintf(os.Stderr, "  -D                  Dump all activity to stderr (provider, tools, prompt, response)\n")
+		fmt.Fprintf(os.Stderr, "  -D                  Dump all activity to stderr (provider, prompt, response)\n")
 		fmt.Fprintf(os.Stderr, "                      All lines are prefixed with # (shell comment syntax)\n")
 		fmt.Fprintf(os.Stderr, "                      Implies -v (verbose comments in output)\n")
 		fmt.Fprintf(os.Stderr, "\nEnvironment:\n")
@@ -145,7 +144,6 @@ func Run(opts Options) int {
 	if *printPromptFlag {
 		client, err := llm.NewClient(llm.Config{
 			Verbose: *verboseFlag,
-			NoTools: *noToolsFlag,
 			Debug:   *debugFlag,
 		})
 		if err != nil {
@@ -168,7 +166,7 @@ func Run(opts Options) int {
 
 	// Generate command
 	ctx := context.Background()
-	command, err := generateCommand(ctx, prompt, *verboseFlag, *noToolsFlag, *debugFlag, histMgr)
+	command, err := generateCommand(ctx, prompt, *verboseFlag, *debugFlag, histMgr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -202,7 +200,7 @@ func Run(opts Options) int {
 }
 
 // generateCommand uses the LLM to generate a shell command from the prompt.
-func generateCommand(ctx context.Context, prompt string, verbose, noTools, debug bool, histMgr *history.Manager) (string, error) {
+func generateCommand(ctx context.Context, prompt string, verbose, debug bool, histMgr *history.Manager) (string, error) {
 	histContext, err := histMgr.GetRecentContext(3)
 	if err != nil {
 		histContext = nil
@@ -210,7 +208,6 @@ func generateCommand(ctx context.Context, prompt string, verbose, noTools, debug
 
 	client, err := llm.NewClient(llm.Config{
 		Verbose: verbose,
-		NoTools: noTools,
 		Debug:   debug,
 	})
 	if err != nil {

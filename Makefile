@@ -14,7 +14,7 @@ else
 	GXX_BINARY=gxx
 endif
 
-.PHONY: all build build-gx build-gxx test run clean lint fmt tidy help version version-increment install push
+.PHONY: all build build-gx build-gxx test run clean lint fmt tidy help version version-increment install push update-llm
 
 ## all: Build both binaries (default target)
 all: build
@@ -87,6 +87,11 @@ push: fmt tidy build test
 	git tag v$$NEW_VERSION && \
 	git push --tags && \
 	echo "Released v$$NEW_VERSION"
+
+## update-llm: Pull latest easy-llm-wrapper directly from VCS (bypasses proxy cache)
+update-llm:
+	GOPROXY=direct go get github.com/nealhardesty/easy-llm-wrapper@latest
+	go mod tidy
 
 ## install: Install both gx and gxx binaries to GOPATH/bin
 install:

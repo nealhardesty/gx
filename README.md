@@ -14,22 +14,19 @@ A lightning-fast CLI assistant that converts natural language into executable sh
 │             │    │ ~/.gxhistory │    │ (Ollama or  │    │ ~/.gx    │
 └─────────────┘    └──────────────┘    │  OpenRouter)│    └──────────┘
                                        └─────────────┘         │
-                                              ▲                 ▼
-                                              │           ┌───────────┐
-                                    ┌─────────────────┐   │ Execute   │
-                                    │ Pre-collected   │   │ (-x / -y) │
-                                    │ system context  │   └───────────┘
-                                    │ (pwd,ls,ps,...) │
-                                    └─────────────────┘
+                                                                ▼
+                                                          ┌───────────┐
+                                                          │ Execute   │
+                                                          │ (-x / -y) │
+                                                          └───────────┘
 ```
 
 **Generate → Cache → Execute** flow:
 1. **Prompt** — User passes natural language to `gx`
 2. **Context** — Loads last 2-3 turns from `~/.gxhistory` for follow-up awareness
-3. **System context** — Pre-collects `pwd`, `ls`, `ps`, `uptime` and injects into the system prompt
-4. **Inference** — Sent to Ollama or OpenRouter with strict system instruction (shell-type aware)
-5. **Stage** — Output saved to `~/.gx` for review
-6. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
+3. **Inference** — Sent to Ollama or OpenRouter with a shell/platform/environment-aware system prompt
+4. **Stage** — Output saved to `~/.gx` for review
+5. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
 
 ## Installation
 
@@ -62,7 +59,6 @@ sudo mv gx gxx /usr/local/bin/   # Linux/macOS
 
 **Or install directly:**
 ```bash
-# Installs both gx and gxx
 go install github.com/nealhardesty/gx@latest
 go install github.com/nealhardesty/gx/cmd/gxx@latest
 
@@ -104,7 +100,6 @@ git diff | gx -  # Use stdin as entire prompt
 | `-y` | YOLO mode — execute immediately (no staging review) |
 | `-v` | Verbose — include detailed comments in output |
 | `-c` | Clear history and staged commands |
-| `-n` | Disable context pre-collection (no system context injected) |
 | `-p` | Print the prompt that would be sent to the LLM (don't send it) |
 | `-D` | Debug mode — dump all activity to stderr, each line prefixed with `#`. Implies `-v`. |
 | `--version` | Display version information |
@@ -131,8 +126,6 @@ git diff | gx -y - "create a commit message for these changes"
 | `gx` | Standard command generation and execution |
 | `gxx` | Shortcut that automatically includes `-y` flag — equivalent to `gx -y` (YOLO mode) |
 
-The `gxx` command is a convenience shortcut that automatically generates and executes commands immediately (YOLO mode) without needing to pass the `-y` flag. Both `gx` and `gxx` are built and installed together.
-
 ## Storage
 
 | File | Purpose |
@@ -148,9 +141,7 @@ Platform and OS are also detected: macOS, Linux, WSL2, and Windows (PowerShell/C
 
 ## Environment Context
 
-On every request, gx pre-collects system context (current directory listing, running processes, uptime) and injects it into the LLM system prompt so it can generate accurate, context-aware commands. Disable with `-n`.
-
-Additionally, relevant environment variables are automatically included:
+On every request, relevant environment variables are automatically collected and injected into the LLM system prompt so it can generate accurate, context-aware commands:
 
 | Category | Variables Collected |
 |----------|-------------------|
@@ -180,7 +171,7 @@ Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH
 
 ### Debugging
 
-Use `-D` for a full diagnostic dump to stderr. Every line is prefixed with `#` (shell comment syntax) so output remains copy-paste safe. `-D` also implies `-v` (verbose comments in the generated command):
+Use `-D` for a full diagnostic dump to stderr. Every line is prefixed with `#` (shell comment syntax). `-D` also implies `-v`:
 
 ```bash
 gx -D "list files in current directory"
@@ -188,13 +179,7 @@ gx -D "list files in current directory"
 # model:    anthropic/claude-3-haiku
 # shell:    zsh
 # platform: wsl2/amd64
-# tools:    true
-# tool pwd:
-# /home/neal/dev/gx
-# tool ls:
-# d .claude (0 bytes)
-# - AGENTS.md (4096 bytes)
-# ...
+# history: 0 entries
 # prompt:
 # list files in current directory
 # sending request...
@@ -208,7 +193,7 @@ Use `-p` to print the full prompt (system instruction + history + user message) 
 gx -p "list files in current directory"
 ```
 
-Prompt logs are automatically written to `~/.gxprompt` (or the path in `GX_PROMPT_OUTPUT`) for every request.
+Prompt logs are automatically written to `~/.gxprompt` (or `GX_PROMPT_OUTPUT`) for every request.
 
 ## Project Structure
 
@@ -227,13 +212,9 @@ gx/
     ├── version/
     │   └── version.go   # Semantic version constant
     ├── llm/
-    │   └── client.go    # LLM client wrapper (easy-llm-wrapper + system prompt logic)
-    ├── history/
-    │   └── history.go   # ~/.gxhistory management
-    └── tools/
-        ├── registry.go  # Tool dispatch for context pre-collection
-        ├── files.go     # File system tools (pwd, ls, stat, cat)
-        └── process.go   # Process tools (ps, uptime)
+    │   └── client.go    # LLM client (easy-llm-wrapper + system prompt logic)
+    └── history/
+        └── history.go   # ~/.gxhistory management
 ```
 
 ## Technical Details
@@ -241,7 +222,7 @@ gx/
 - **SDK:** [`github.com/nealhardesty/easy-llm-wrapper`](https://github.com/nealhardesty/easy-llm-wrapper)
 - **Providers:** Ollama (local) or OpenRouter (cloud) — auto-selected from environment
 - **System Instruction:** Shell-type aware prompt that returns raw commands only — no markdown, no backticks, no explanations. Comments use shell-appropriate syntax.
-- **Context:** OS, platform, shell type, environment variables, and pre-collected system state (pwd, ls, ps, uptime) are automatically passed to the LLM.
+- **Context:** OS, platform, shell type, and environment variables are automatically passed to the LLM.
 
 ## Troubleshooting
 
