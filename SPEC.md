@@ -1,7 +1,6 @@
 # gx — Specification
 
-> **Status:** describes gx **v1.2.5** plus the unreleased code-review fixes
-> (`internal/version/version.go`), built against
+> **Status:** describes gx **v1.2.6** (`internal/version/version.go`), built against
 > `github.com/nealhardesty/easy-llm-wrapper` **v0.1.14**. This file is the
 > authority on *how gx works*. User-facing setup lives in `README.md`; work that
 > does not exist yet lives in `ROADMAP.md`. If code and this document disagree,
@@ -619,7 +618,7 @@ not own them. Defaults drift: Ollama went `llama3.2` → `gpt-oss:20b` →
 | v1.2.3 | Tools package and `-n` removed; provider config delegated to `elw.ConfigFromEnv()` | Claude CLI provider arrived via the wrapper |
 | v1.2.4 | Conversation history removed; `-c` now clears staging only | Stateless prompts; `history` package name is vestigial |
 | v1.2.5 (2026-10-22) | SPEC/ROADMAP added; README drift fixed; compact shell/platform-aware prompt; installed-tool probe replaces `PATH`; response fence stripping; prompt log 0600; `-x` banner to stderr; `make` defaults to `help`; portable sed; `make check`; first test suite | §5.3, §5.6, §5.7, §6.2, §10 |
-| unreleased (2026-10-22) | Full code review: wrapper v0.1.14 (Claude CLI without tools, working OpenRouter default, `LLM_PROVIDER`); one shell for generation and execution; Windows shell detection fixed; Ctrl-C waits for the child; 128+N for signal deaths; fence extraction anywhere; empty reply is an error; no-`HOME` tolerance; `GX_PROMPT_OUTPUT=off`; log chmod before write, regular files only; Makefile `LDFLAGS`/`RACE`/safe `push`; anchored `.gitignore`; hermetic tests | §5.1, §5.2, §5.4, §5.7, §6, §10.3 |
+| v1.2.6 (2026-10-22) | Full code review: wrapper v0.1.14 (Claude CLI without tools, working OpenRouter default, `LLM_PROVIDER`); one shell for generation and execution; Windows shell detection fixed; Ctrl-C waits for the child; 128+N for signal deaths; fence extraction anywhere; empty reply is an error; no-`HOME` tolerance; `GX_PROMPT_OUTPUT=off`; log chmod before write, regular files only; Makefile `LDFLAGS`/`RACE`/safe `push`; anchored `.gitignore`; hermetic tests | §5.1, §5.2, §5.4, §5.7, §6, §10.3 |
 
 `CHANGELOG.md` was retired (deleted from the tree); git history and this table
 are the record going forward.
