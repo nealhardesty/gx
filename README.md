@@ -2,57 +2,58 @@
 
 ![gx logo](gx.png)
 
-A lightning-fast CLI assistant that converts natural language into executable shell commands using local or cloud LLMs via [easy-llm-wrapper](https://github.com/nealhardesty/easy-llm-wrapper).
+A lightning-fast CLI assistant that converts natural language into executable shell commands using the Claude CLI, OpenRouter, or a local Ollama model via [easy-llm-wrapper](https://github.com/nealhardesty/easy-llm-wrapper).
 
 **Zero fluff.** Returns raw shell code, not chatty explanations.
 
 ## Architecture
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌──────────┐
-│ User Prompt │───▶│ LLM         │───▶│ Stage to │
-│             │    │ (Ollama or  │    │ ~/.gx    │
-└─────────────┘    │  OpenRouter)│    └──────────┘
-                   └─────────────┘         │
-                                           ▼
-                                     ┌───────────┐
-                                     │ Execute   │
-                                     │ (-x / -y) │
-                                     └───────────┘
+┌─────────────┐    ┌──────────────────┐    ┌──────────┐
+│ User Prompt │───▶│ LLM              │───▶│ Stage to │
+│  (+ stdin)  │    │ claude CLI,      │    │ ~/.gx    │
+└─────────────┘    │ OpenRouter, or   │    └──────────┘
+                   │ Ollama           │         │
+                   └──────────────────┘         ▼
+                                          ┌───────────┐
+                                          │ Execute   │
+                                          │ (-x / -y) │
+                                          └───────────┘
 ```
 
 **Generate → Stage → Execute** flow:
 1. **Prompt** — User passes natural language to `gx`
-2. **Inference** — Sent to Ollama or OpenRouter with a shell/platform/environment-aware system prompt
+2. **Inference** — Sent to the selected provider with a compact shell/platform-aware system prompt
 3. **Stage** — Output saved to `~/.gx` for review
 4. **Execute** — Run via `-x` (review first) or `-y` (YOLO mode)
+
+Every run is a single, stateless request: no conversation history is kept. See [SPEC.md](SPEC.md) for the full specification.
 
 ## Installation
 
 **Prerequisites:**
 - [Go 1.21+](https://go.dev/)
-- Ollama running locally **or** an OpenRouter API key
+- One LLM provider (see below)
 
-**Ollama setup (local):**
-```bash
-# Install Ollama: https://ollama.com
-ollama pull llama3.2
-export OLLAMA_HOST=http://localhost:11434
-```
+**Pick a provider** — gx uses the first one available, in this order:
 
-**OpenRouter setup (cloud):**
-```bash
-export OPENROUTER_API_KEY=your_api_key_here
-```
+1. **Claude CLI** — if [`claude`](https://claude.com/claude-code) is on your `PATH`, it is used automatically. No further setup.
+2. **OpenRouter (cloud):**
+   ```bash
+   export OPENROUTER_API_KEY=your_api_key_here
+   ```
+3. **Ollama (local):**
+   ```bash
+   # Install Ollama: https://ollama.com
+   ollama pull gpt-oss:20b          # the default model; or pull any model and set GX_MODEL
+   export OLLAMA_HOST=http://localhost:11434
+   ```
+
+> If `claude` is on your `PATH` it wins even when `OPENROUTER_API_KEY` or `OLLAMA_HOST` is set. See [Troubleshooting](#forcing-a-specific-provider) to override.
 
 **Build from source:**
 ```bash
-# Build both gx and gxx
-make build
-
-# Or manually
-go build -o gx .
-go build -o gxx ./cmd/gxx
+make build                       # builds ./gx and ./gxx
 sudo mv gx gxx /usr/local/bin/   # Linux/macOS
 ```
 
@@ -61,7 +62,7 @@ sudo mv gx gxx /usr/local/bin/   # Linux/macOS
 go install github.com/nealhardesty/gx@latest
 go install github.com/nealhardesty/gx/cmd/gxx@latest
 
-# Or use make install (builds and installs both)
+# Or from a checkout
 make install
 ```
 
@@ -87,6 +88,8 @@ docker ps | gx - "create a kill command for these containers"
 git diff | gx -  # Use stdin as entire prompt
 ```
 
+> **Flags go before the prompt.** `gx "list files" -y` sends the text `list files -y` to the model and does *not* enable YOLO mode. Write `gx -y "list files"`.
+
 ## Options
 
 | Flag | Description |
@@ -94,11 +97,13 @@ git diff | gx -  # Use stdin as entire prompt
 | `-` | Read additional input from stdin and append to prompt |
 | `-x` | Execute command staged in `~/.gx` |
 | `-y` | YOLO mode — execute immediately (no staging review) |
-| `-v` | Verbose — include detailed comments in output |
+| `-v` | Verbose — include a short comment before each step |
 | `-c` | Clear staged command |
-| `-p` | Print the prompt that would be sent to the LLM (don't send it) |
+| `-p` | Print the prompt (system + user message) that would be sent to the LLM; nothing is sent |
 | `-D` | Debug mode — dump all activity to stderr, each line prefixed with `#`. Implies `-v`. |
 | `--version` | Display version information |
+
+When a command is executed (`-x` or `-y`), its exit code becomes gx's exit code, and gx's own banners go to stderr — stdout carries only the command's output.
 
 ### Stdin Support
 
@@ -111,9 +116,11 @@ cat error.log | gx - "explain this error"
 # Use stdin as entire prompt
 docker ps | gx -
 
-# Works with other flags
+# Works with other flags (flags first)
 git diff | gx -y - "create a commit message for these changes"
 ```
+
+Piped content is untrusted input to the model. Prefer `gx -` and review over `gxx -` for content you didn't write.
 
 ## Shortcuts
 
@@ -124,28 +131,30 @@ git diff | gx -y - "create a commit message for these changes"
 
 ## Storage
 
-| File | Purpose |
+| File | Mode | Purpose |
+|------|------|---------|
+| `~/.gx` | 0600 | Latest generated command (staging area) |
+| `~/.gxprompt` | 0600 | Last full prompt and response (debug log; path set by `GX_PROMPT_OUTPUT`) |
+
+## Shell and Platform Aware
+
+gx reads your shell from `$SHELL` (your login shell), or on Windows detects PowerShell vs CMD, and tailors the prompt to it: correct comment syntax (`#` vs `REM`), line continuation (`\`, PowerShell backtick, CMD `^`), and fish-specific syntax.
+
+Platform is detected too — macOS, Linux, WSL2, and Windows. On macOS the model is told the userland is BSD (so you get `sed -i ''`, not GNU `sed -i`); on WSL2 it is told Windows drives live under `/mnt/<letter>`.
+
+## Context Sent to the Model
+
+Each request includes a short context block so commands fit your machine:
+
+| Item | Details |
 |------|---------|
-| `~/.gx` | Latest generated command (staging area) |
+| `cwd` | Current working directory |
+| Unix/Linux/macOS | `HOME`, `USER` (or `LOGNAME`) |
+| Windows | `USERPROFILE`, `USERNAME`, `TEMP` (or `TMP`) |
+| Common | `GOPATH`, `VIRTUAL_ENV`, `DOCKER_HOST`, `KUBECONFIG`, `AWS_PROFILE`, `AWS_REGION`, `GCP_PROJECT` |
+| `installed` | Which of a curated set of tools are on your `PATH` (e.g. `brew`, `apt`, `git`, `docker`, `kubectl`, `rg`, `fd`, `jq`, `gsed`, `python3`) — looked up only, never run |
 
-## Shell Aware
-
-gx automatically detects the shell running as its parent (`sh`, `bash`, `zsh`, `powershell`, `cmd`) and tailors output accordingly — correct comment syntax, line continuation style, and idioms per shell.
-
-Platform and OS are also detected: macOS, Linux, WSL2, and Windows (PowerShell/CMD) are all handled.
-
-## Environment Context
-
-On every request, relevant environment variables are automatically collected and injected into the LLM system prompt so it can generate accurate, context-aware commands:
-
-| Category | Variables Collected |
-|----------|-------------------|
-| Unix/Linux/macOS | `HOME`, `USER`/`LOGNAME`, `SHELL`, `PWD` |
-| Windows | `USERPROFILE`, `USERNAME`, `ComSpec`, `PSModulePath`, `TEMP`/`TMP` |
-| Common | `PATH`, `GOPATH`, `GOROOT`, `DOCKER_HOST`, `KUBECONFIG`, `AWS_PROFILE`, `AWS_REGION`, `GCP_PROJECT` |
-| gx config | `GX_MODEL`, `GX_PROMPT_OUTPUT` |
-
-Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`) are automatically redacted. Long values like `PATH` are truncated.
+Only these allow-listed variables are sent; API keys and anything secret-named are never included (and are redacted if ever added). Values are capped at 200 characters. Use `gx -p "..."` to see exactly what would be sent.
 
 ## Configuration
 
@@ -153,15 +162,16 @@ Sensitive variable names (containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENROUTER_API_KEY` | OpenRouter API key — enables OpenRouter provider (takes priority over Ollama) | — |
-| `OLLAMA_HOST` | Ollama base URL — enables Ollama provider | — |
+| `OPENROUTER_API_KEY` | OpenRouter API key — enables OpenRouter (used if no `claude` CLI) | — |
+| `OLLAMA_HOST` | Ollama base URL — enables Ollama (used if neither of the above) | — |
 | `GX_MODEL` | Model override (takes priority over `MODEL`) | provider default |
 | `MODEL` | Model override | provider default |
-| `GX_PROMPT_OUTPUT` | Path to write prompt logs for debugging | `~/.gxprompt` |
+| `GX_PROMPT_OUTPUT` | Path for the prompt log (`~/` is expanded) | `~/.gxprompt` |
+| `LLM_DEBUG` | Set to `1` to trace provider selection inside easy-llm-wrapper | — |
 
-**Provider priority:** `OPENROUTER_API_KEY` > `OLLAMA_HOST`
+**Provider priority:** `claude` CLI on `PATH` > `OPENROUTER_API_KEY` > `OLLAMA_HOST`
 
-**Default models:** `llama3.2` (Ollama) · `anthropic/claude-3-haiku` (OpenRouter)
+**Default models:** Claude CLI's own default · `anthropic/claude-3-haiku` (OpenRouter) · `gpt-oss:20b` (Ollama)
 
 ### Debugging
 
@@ -172,56 +182,80 @@ gx -D "list files in current directory"
 # provider: openrouter
 # model:    anthropic/claude-3-haiku
 # shell:    zsh
-# platform: wsl2/amd64
+# platform: darwin/arm64
 # prompt:
 # list files in current directory
 # sending request...
 # response:
+# # List all files, including hidden ones, with details
 # ls -la
+# List all files, including hidden ones, with details
 ls -la
 ```
 
-Use `-p` to print the full prompt (system instruction + history + user message) without sending it to the LLM:
+With the Claude CLI provider, a few extra wrapper lines prefixed `[llm debug]` also appear.
+
+Use `-p` to print the full prompt (system instruction + user message) without sending it to the LLM:
 ```bash
 gx -p "list files in current directory"
 ```
 
-Prompt logs are automatically written to `~/.gxprompt` (or `GX_PROMPT_OUTPUT`) for every request.
+The last prompt and response are always written to `~/.gxprompt` (or `GX_PROMPT_OUTPUT`), readable only by you.
+
+## Development
+
+Everything runs through `make`; bare `make` lists the targets.
+
+| Target | Description |
+|--------|-------------|
+| `make help` | List all targets (default) |
+| `make build` | Build `./gx` and `./gxx` |
+| `make install` | `go install` both binaries |
+| `make run ARGS="..."` | Build and run `gx` with arguments |
+| `make test` | Run all tests with the race detector |
+| `make check` | gofmt check + `go vet` + tests (what CI should run) |
+| `make lint` | `go vet` |
+| `make fmt` | `gofmt -s` (+ `goimports` if installed) |
+| `make tidy` | `go mod tidy` |
+| `make version` | Print the current version |
+| `make version-increment` | Bump the patch version |
+| `make push` | fmt, tidy, build, test, bump patch, commit (message from `gitsum`), push, tag |
+| `make update-llm` | Pull the latest easy-llm-wrapper, bypassing the module proxy cache |
+| `make clean` | Remove built binaries |
+
+Tests never touch your real `~/.gx` or call a real LLM: the CLI tests run against a fake Ollama server with an isolated `HOME` and `PATH`.
 
 ## Project Structure
 
 ```
 gx/
 ├── main.go              # gx CLI entry point (thin wrapper)
-├── version.go           # Semantic version constant (re-exports internal/version)
+├── version.go           # Re-exports internal/version (compat)
 ├── Makefile             # Build automation
+├── SPEC.md              # Full specification
+├── ROADMAP.md           # Planned and brainstormed work
 ├── go.mod / go.sum      # Dependencies
 ├── cmd/
 │   └── gxx/
 │       └── main.go      # gxx CLI entry point (thin wrapper with -y flag)
 └── internal/
-    ├── cli/
-    │   └── cli.go       # Shared CLI logic (used by both gx and gxx)
-    ├── version/
-    │   └── version.go   # Semantic version constant
-    ├── llm/
-    │   └── client.go    # LLM client (easy-llm-wrapper + system prompt logic)
-    └── history/
-        └── history.go   # ~/.gx staging file management
+    ├── cli/             # Shared CLI logic (flags, stdin, execution) + tests
+    ├── version/         # Semantic version constant
+    ├── llm/             # Provider client, system prompt, context collection + tests
+    └── history/         # ~/.gx staging file management + tests
 ```
 
 ## Technical Details
 
-- **SDK:** [`github.com/nealhardesty/easy-llm-wrapper`](https://github.com/nealhardesty/easy-llm-wrapper)
-- **Providers:** Ollama (local) or OpenRouter (cloud) — auto-selected from environment
-- **System Instruction:** Shell-type aware prompt that returns raw commands only — no markdown, no backticks, no explanations. Comments use shell-appropriate syntax.
-- **Context:** OS, platform, shell type, and environment variables are automatically passed to the LLM.
+- **SDK:** [`github.com/nealhardesty/easy-llm-wrapper`](https://github.com/nealhardesty/easy-llm-wrapper) — the only dependency
+- **Providers:** Claude CLI, OpenRouter (cloud), or Ollama (local) — auto-selected from environment
+- **System Instruction:** Compact, shell- and platform-specific prompt that demands raw commands only. As a safety net, a reply wrapped in a Markdown code fence or backticks is unwrapped before it is printed or staged.
 
 ## Troubleshooting
 
 ### "no LLM provider configured"
 
-Set either `OPENROUTER_API_KEY` or `OLLAMA_HOST`:
+Install the `claude` CLI, or set either `OPENROUTER_API_KEY` or `OLLAMA_HOST`:
 
 ```bash
 # For Ollama (local)
@@ -231,11 +265,22 @@ export OLLAMA_HOST=http://localhost:11434
 export OPENROUTER_API_KEY=your_key_here
 ```
 
-### "failed to create LLM client"
+### "failed to generate response"
 
 Ensure the configured provider is reachable:
-- **Ollama:** `ollama list` — confirm Ollama is running and `OLLAMA_HOST` is correct
+- **Claude CLI:** `claude -p hello` should answer
+- **Ollama:** `ollama list` — confirm Ollama is running, `OLLAMA_HOST` is correct, and the model (default `gpt-oss:20b`) is pulled
 - **OpenRouter:** confirm `OPENROUTER_API_KEY` is valid at [openrouter.ai](https://openrouter.ai)
+
+Run `LLM_DEBUG=1 gx -D "..."` to see which provider was picked and why.
+
+### Forcing a specific provider
+
+The `claude` CLI is chosen whenever it is on `PATH`. To use OpenRouter or Ollama instead, run gx with a `PATH` that excludes it, e.g. a shell alias:
+
+```bash
+alias gxo='PATH=/usr/local/bin:/usr/bin:/bin gx'
+```
 
 ## License
 

@@ -14,9 +14,12 @@ else
 	GXX_BINARY=gxx
 endif
 
-.PHONY: all build build-gx build-gxx test run clean lint fmt tidy help version version-increment install push update-llm
+.PHONY: all build build-gx build-gxx test check run clean lint fmt tidy help version version-increment install push update-llm
 
-## all: Build both binaries (default target)
+# Running bare `make` lists the targets.
+.DEFAULT_GOAL := help
+
+## all: Build both binaries
 all: build
 
 ## build: Compile both gx and gxx binaries
@@ -43,6 +46,11 @@ clean:
 	rm -f $(GX_BINARY) $(GXX_BINARY)
 	rm -f $(GX_BINARY).exe $(GXX_BINARY).exe
 
+## check: Verify formatting, vet, and run tests (what CI should run)
+check: lint test
+	@UNFORMATTED=$$(gofmt -s -l .) && if [ -n "$$UNFORMATTED" ]; then \
+		echo "gofmt needed:"; echo "$$UNFORMATTED"; exit 1; fi
+
 ## lint: Run linters (go vet)
 lint:
 	go vet ./...
@@ -66,21 +74,14 @@ version-increment:
 	MAJOR=$$(echo $$VERSION | cut -d. -f1) && \
 	MINOR=$$(echo $$VERSION | cut -d. -f2) && \
 	PATCH=$$(echo $$VERSION | cut -d. -f3) && \
-	NEW_PATCH=$$((PATCH + 1)) && \
-	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH" && \
-	sed -i "s/Version = \"$$VERSION\"/Version = \"$$NEW_VERSION\"/" internal/version/version.go && \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$((PATCH + 1))" && \
+	sed -i.bak "s/Version = \"$$VERSION\"/Version = \"$$NEW_VERSION\"/" internal/version/version.go && \
+	rm -f internal/version/version.go.bak && \
 	echo "Bumped $$VERSION → $$NEW_VERSION"
 
 ## push: Bump patch version, run checks, commit, push, and tag
-push: fmt tidy build test
-	@VERSION=$$(grep 'Version = ' internal/version/version.go | sed 's/.*"\(.*\)".*/\1/') && \
-	MAJOR=$$(echo $$VERSION | cut -d. -f1) && \
-	MINOR=$$(echo $$VERSION | cut -d. -f2) && \
-	PATCH=$$(echo $$VERSION | cut -d. -f3) && \
-	NEW_PATCH=$$((PATCH + 1)) && \
-	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH" && \
-	sed -i "s/Version = \"$$VERSION\"/Version = \"$$NEW_VERSION\"/" internal/version/version.go && \
-	echo "Bumped $$VERSION → $$NEW_VERSION" && \
+push: fmt tidy build test version-increment
+	@NEW_VERSION=$$(grep 'Version = ' internal/version/version.go | sed 's/.*"\(.*\)".*/\1/') && \
 	git add -A && \
 	git commit -m "release: v$$NEW_VERSION.  $$(gitsum)" && \
 	git push && \

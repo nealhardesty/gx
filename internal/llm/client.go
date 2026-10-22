@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	elw "github.com/nealhardesty/easy-llm-wrapper"
 )
@@ -30,8 +31,11 @@ type Client struct {
 	platform string
 }
 
+// lookPath is a variable so tests can control which tools appear installed.
+var lookPath = exec.LookPath
+
 // NewClient creates a new Client, auto-detecting provider from environment variables.
-// Provider priority: claude CLI > OPENROUTER_API_KEY > OLLAMA_HOST.
+// Provider priority: claude CLI on PATH > OPENROUTER_API_KEY > OLLAMA_HOST.
 // Model priority: GX_MODEL > MODEL > provider default.
 func NewClient(cfg Config) (*Client, error) {
 	elwCfg, err := elw.ConfigFromEnv()
@@ -96,7 +100,7 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("failed to generate response: %w", err)
 	}
 
-	result := strings.TrimSpace(resp.Text)
+	result := cleanResponse(resp.Text)
 	c.debugf("response:\n%s", result)
 	c.writePromptLog(systemPrompt, prompt, result)
 	return result, nil
@@ -104,170 +108,223 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 
 // BuildPrompt returns the full prompt that would be sent to the LLM, for the -p flag.
 func (c *Client) BuildPrompt(prompt string) string {
-	system := c.buildSystemInstruction()
+	return formatTranscript(c.buildSystemInstruction(), prompt, "")
+}
+
+// formatTranscript renders a SYSTEM/USER[/RESPONSE] transcript, shared by -p and the prompt log.
+func formatTranscript(system, prompt, response string) string {
 	parts := []string{
-		fmt.Sprintf("SYSTEM:\n%s", system),
-		fmt.Sprintf("USER:\n%s", prompt),
+		"SYSTEM:\n" + system,
+		"USER:\n" + prompt,
+	}
+	if response != "" {
+		parts = append(parts, "RESPONSE:\n"+response)
 	}
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-// buildSystemInstruction creates the system instruction for the LLM.
-func (c *Client) buildSystemInstruction() string {
-	commentSyntax := "#"
-	commentWarning := ""
-	if c.shell == "powershell" || c.shell == "pwsh" {
-		commentSyntax = "#"
-		commentWarning = "CRITICAL: For PowerShell, use # for comments. NEVER use REM (REM is only for CMD).\n\n"
-	} else if c.shell == "cmd" {
-		commentSyntax = "REM"
-		commentWarning = "For CMD, use REM for comments.\n\n"
+// cleanResponse trims the model output and strips a Markdown code fence or
+// inline backticks wrapping the whole reply, which models emit despite instructions.
+func cleanResponse(text string) string {
+	s := strings.TrimSpace(text)
+
+	if strings.HasPrefix(s, "```") {
+		lines := strings.Split(s, "\n")
+		if len(lines) >= 2 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+		}
 	}
 
-	verboseInstruction := "Do not include comments unless absolutely necessary for understanding."
-	if c.verbose {
-		verboseInstruction = "Include helpful comments explaining what each part of the command does."
+	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' && !strings.Contains(s, "\n") &&
+		strings.Count(s, "`") == 2 {
+		return strings.TrimSpace(s[1 : len(s)-1])
 	}
 
-	envSection := c.collectEnvironment()
-	envText := ""
-	if envSection != "" {
-		envText = "\n\nENVIRONMENT:\n" + envSection
-	}
-
-	return fmt.Sprintf(`You are a shell command generator. Your task is to convert natural language requests into executable shell commands.
-
-%sCRITICAL RULES:
-1. Return ONLY the shell command(s) - no explanations, no markdown, no backticks.
-2. Do not wrap output in code blocks or use markdown formatting.
-3. If you need to add comments, use the appropriate syntax for the shell: %s
-4. %s
-5. The command must be directly executable - copy-paste ready. This is an absolute requirement no matter what.
-6. For multi-line commands, use appropriate line continuation for the shell.
-7. If a task cannot be accomplished with a shell command, explain briefly using shell comments.
-
-PAY ATTENTION:
-Again, the command must be directly executable - copy-paste ready. This is an absolute requirement no matter what.
-
-CONTEXT:
-- Shell: %s
-- Platform: %s
-- Operating System: %s%s`,
-		commentWarning, commentSyntax, verboseInstruction,
-		c.shell, c.platform, runtime.GOOS, envText)
+	return s
 }
 
-// collectEnvironment collects and formats relevant environment variables for the system prompt.
-func (c *Client) collectEnvironment() string {
-	var envVars []string
+// shellProfile captures the syntax facts the model most often gets wrong per shell.
+type shellProfile struct {
+	comment      string // line-comment token
+	continuation string // how to continue a long line
+	note         string // extra shell-specific guidance; may be empty
+}
 
-	getEnv := func(key string) (string, bool) {
-		val := os.Getenv(key)
-		if val == "" {
-			return "", false
+func profileFor(shell string) shellProfile {
+	switch shell {
+	case "powershell", "pwsh":
+		return shellProfile{
+			comment:      "#",
+			continuation: "a trailing backtick (`)",
+			note:         "Use PowerShell cmdlets and syntax. Comments start with #; never use REM.",
 		}
-		return val, true
+	case "cmd":
+		return shellProfile{
+			comment:      "REM",
+			continuation: "a trailing caret (^)",
+			note:         "Use cmd.exe syntax and built-ins; chain steps with &&.",
+		}
+	case "fish":
+		return shellProfile{
+			comment:      "#",
+			continuation: "a trailing backslash (\\)",
+			note:         "Use fish syntax: set VAR value (not VAR=value), begin/end blocks, no heredocs.",
+		}
+	default:
+		return shellProfile{
+			comment:      "#",
+			continuation: "a trailing backslash (\\)",
+		}
+	}
+}
+
+// platformNote returns userland caveats for the platform, or "".
+func platformNote(platform string) string {
+	switch {
+	case strings.HasPrefix(platform, "darwin/"):
+		return "macOS ships BSD userland, not GNU: use BSD-compatible flags (e.g. sed -i '', stat -f, date -v)."
+	case strings.HasPrefix(platform, "wsl2/"):
+		return "This is Linux under WSL2; Windows drives are mounted at /mnt/<letter>."
+	}
+	return ""
+}
+
+// buildSystemInstruction creates the system instruction for the LLM.
+func (c *Client) buildSystemInstruction() string {
+	p := profileFor(c.shell)
+
+	commentRule := "No comments."
+	if c.verbose {
+		commentRule = fmt.Sprintf("Put a short %s comment before each step explaining what it does.", p.comment)
 	}
 
-	sanitize := func(key, val string) string {
-		keyUpper := strings.ToUpper(key)
-		sensitivePatterns := []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"}
-		for _, pattern := range sensitivePatterns {
-			if strings.Contains(keyUpper, pattern) {
-				return "[REDACTED]"
+	var b strings.Builder
+	fmt.Fprintf(&b, "You turn a request into a ready-to-run %s command on %s.\n\n", c.shell, c.platform)
+	fmt.Fprintf(&b, "Reply with the command text only: no prose, no Markdown, no code fences. "+
+		"Your reply is pasted into %s and executed exactly as written.\n", c.shell)
+	fmt.Fprintf(&b, "- %s\n", commentRule)
+	fmt.Fprintf(&b, "- Split long commands with %s; put independent steps on separate lines.\n", p.continuation)
+	b.WriteString("- Prefer tools listed as installed. Do not add destructive options (force, recursive delete, overwrite) the request does not ask for.\n")
+	fmt.Fprintf(&b, "- If no command can do it, reply only with a %s comment saying why.\n", p.comment)
+	for _, note := range []string{p.note, platformNote(c.platform)} {
+		if note != "" {
+			fmt.Fprintf(&b, "- %s\n", note)
+		}
+	}
+
+	if ctx := collectEnvironment(); ctx != "" {
+		b.WriteString("\nContext:\n")
+		b.WriteString(ctx)
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// envVar names a context variable; the first non-empty name in names wins.
+type envVar struct {
+	label string
+	names []string
+}
+
+var (
+	unixEnv = []envVar{
+		{"HOME", []string{"HOME"}},
+		{"USER", []string{"USER", "LOGNAME"}},
+	}
+	windowsEnv = []envVar{
+		{"USERPROFILE", []string{"USERPROFILE"}},
+		{"USERNAME", []string{"USERNAME"}},
+		{"TEMP", []string{"TEMP", "TMP"}},
+	}
+	commonEnv = []envVar{
+		{"GOPATH", []string{"GOPATH"}},
+		{"VIRTUAL_ENV", []string{"VIRTUAL_ENV"}},
+		{"DOCKER_HOST", []string{"DOCKER_HOST"}},
+		{"KUBECONFIG", []string{"KUBECONFIG"}},
+		{"AWS_PROFILE", []string{"AWS_PROFILE"}},
+		{"AWS_REGION", []string{"AWS_REGION"}},
+		{"GCP_PROJECT", []string{"GCP_PROJECT"}},
+	}
+
+	// probeTools are looked up on PATH so the model knows which non-default tools it may use.
+	// The lookup is a stat per PATH entry; nothing is executed.
+	probeTools = []string{
+		"brew", "apt", "dnf", "pacman", "apk", "winget", "choco",
+		"git", "docker", "podman", "kubectl",
+		"rg", "fd", "jq", "yq", "fzf",
+		"gsed", "gawk", "python3", "node", "go",
+	}
+
+	sensitivePatterns = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"}
+)
+
+// maxEnvValue caps any single context value, in runes.
+const maxEnvValue = 200
+
+// collectEnvironment formats the context lines (cwd, allow-listed env, installed tools).
+func collectEnvironment() string {
+	var lines []string
+
+	if wd, err := os.Getwd(); err == nil {
+		lines = append(lines, "- cwd: "+truncate(wd, maxEnvValue))
+	}
+
+	vars := unixEnv
+	if runtime.GOOS == "windows" {
+		vars = windowsEnv
+	}
+	for _, v := range append(vars[:len(vars):len(vars)], commonEnv...) {
+		for _, name := range v.names {
+			if val := os.Getenv(name); val != "" {
+				lines = append(lines, fmt.Sprintf("- %s: %s", v.label, redact(v.label, truncate(val, maxEnvValue))))
+				break
 			}
 		}
+	}
+
+	if tools := installedTools(); len(tools) > 0 {
+		lines = append(lines, "- installed: "+strings.Join(tools, ", "))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// installedTools returns the probeTools found on PATH, in list order.
+func installedTools() []string {
+	var found []string
+	for _, t := range probeTools {
+		if _, err := lookPath(t); err == nil {
+			found = append(found, t)
+		}
+	}
+	return found
+}
+
+// redact hides values whose variable name suggests a secret.
+func redact(name, val string) string {
+	upper := strings.ToUpper(name)
+	for _, p := range sensitivePatterns {
+		if strings.Contains(upper, p) {
+			return "[REDACTED]"
+		}
+	}
+	return val
+}
+
+// truncate shortens val to at most maxRunes runes without splitting a UTF-8 sequence.
+func truncate(val string, maxRunes int) string {
+	if utf8.RuneCountInString(val) <= maxRunes {
 		return val
 	}
-
-	truncate := func(val string, maxLen int) string {
-		if len(val) <= maxLen {
-			return val
-		}
-		return val[:maxLen] + " (truncated)"
-	}
-
-	// gx config vars
-	if val, ok := getEnv("GX_MODEL"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GX_MODEL: %s", val))
-	}
-	if val, ok := getEnv("GX_PROMPT_OUTPUT"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GX_PROMPT_OUTPUT: %s", val))
-	}
-
-	// Platform-specific vars
-	if runtime.GOOS == "windows" {
-		if val, ok := getEnv("USERPROFILE"); ok {
-			envVars = append(envVars, fmt.Sprintf("- USERPROFILE: %s", val))
-		}
-		if val, ok := getEnv("USERNAME"); ok {
-			envVars = append(envVars, fmt.Sprintf("- USERNAME: %s", val))
-		}
-		if val, ok := getEnv("ComSpec"); ok {
-			envVars = append(envVars, fmt.Sprintf("- ComSpec: %s", val))
-		}
-		if val, ok := getEnv("PSModulePath"); ok {
-			envVars = append(envVars, fmt.Sprintf("- PSModulePath: %s", truncate(val, 200)))
-		}
-		if val, ok := getEnv("TEMP"); ok {
-			envVars = append(envVars, fmt.Sprintf("- TEMP: %s", val))
-		} else if val, ok := getEnv("TMP"); ok {
-			envVars = append(envVars, fmt.Sprintf("- TMP: %s", val))
-		}
-	} else {
-		if val, ok := getEnv("HOME"); ok {
-			envVars = append(envVars, fmt.Sprintf("- HOME: %s", val))
-		}
-		if val, ok := getEnv("USER"); ok {
-			envVars = append(envVars, fmt.Sprintf("- USER: %s", val))
-		} else if val, ok := getEnv("LOGNAME"); ok {
-			envVars = append(envVars, fmt.Sprintf("- LOGNAME: %s", val))
-		}
-		if val, ok := getEnv("SHELL"); ok {
-			envVars = append(envVars, fmt.Sprintf("- SHELL: %s", val))
-		}
-		if val, ok := getEnv("PWD"); ok {
-			envVars = append(envVars, fmt.Sprintf("- PWD: %s", val))
-		}
-	}
-
-	// Common vars
-	if val, ok := getEnv("PATH"); ok {
-		envVars = append(envVars, fmt.Sprintf("- PATH: %s", truncate(val, 300)))
-	}
-	if val, ok := getEnv("GOPATH"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GOPATH: %s", val))
-	}
-	if val, ok := getEnv("GOROOT"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GOROOT: %s", val))
-	}
-	if val, ok := getEnv("DOCKER_HOST"); ok {
-		envVars = append(envVars, fmt.Sprintf("- DOCKER_HOST: %s", val))
-	}
-	if val, ok := getEnv("KUBECONFIG"); ok {
-		envVars = append(envVars, fmt.Sprintf("- KUBECONFIG: %s", val))
-	}
-	if val, ok := getEnv("AWS_PROFILE"); ok {
-		envVars = append(envVars, fmt.Sprintf("- AWS_PROFILE: %s", val))
-	}
-	if val, ok := getEnv("AWS_REGION"); ok {
-		envVars = append(envVars, fmt.Sprintf("- AWS_REGION: %s", val))
-	}
-	if val, ok := getEnv("GCP_PROJECT"); ok {
-		envVars = append(envVars, fmt.Sprintf("- GCP_PROJECT: %s", sanitize("GCP_PROJECT", val)))
-	}
-
-	if len(envVars) == 0 {
-		return ""
-	}
-	return strings.Join(envVars, "\n")
+	runes := []rune(val)
+	return string(runes[:maxRunes]) + " (truncated)"
 }
 
 // detectShell detects the current shell.
 func detectShell() string {
 	if shell := os.Getenv("SHELL"); shell != "" {
 		parts := strings.Split(shell, "/")
-		return parts[len(parts)-1]
+		return strings.TrimSuffix(parts[len(parts)-1], ".exe")
 	}
 
 	// Check PSModulePath before ComSpec — PSModulePath is set in PowerShell
@@ -305,32 +362,34 @@ func detectPlatform() string {
 	return fmt.Sprintf("%s/%s", goos, arch)
 }
 
-// writePromptLog writes the prompt log to a file for debugging.
-// Defaults to ~/.gxprompt; overridden by GX_PROMPT_OUTPUT.
-func (c *Client) writePromptLog(system, prompt, response string) {
+// promptLogPath returns where the prompt log is written.
+// Defaults to ~/.gxprompt; overridden by GX_PROMPT_OUTPUT (a leading ~/ is expanded).
+func promptLogPath() (string, error) {
 	outputPath := os.Getenv("GX_PROMPT_OUTPUT")
+	if outputPath != "" && !strings.HasPrefix(outputPath, "~/") {
+		return outputPath, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
 	if outputPath == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return
-		}
-		outputPath = filepath.Join(homeDir, ".gxprompt")
-	} else if strings.HasPrefix(outputPath, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return
-		}
-		outputPath = filepath.Join(homeDir, strings.TrimPrefix(outputPath, "~/"))
+		return filepath.Join(homeDir, ".gxprompt"), nil
 	}
+	return filepath.Join(homeDir, strings.TrimPrefix(outputPath, "~/")), nil
+}
 
-	parts := []string{
-		fmt.Sprintf("SYSTEM:\n%s", system),
-		fmt.Sprintf("USER:\n%s", prompt),
+// writePromptLog writes the prompt log to a file for debugging.
+// The log holds the prompt, stdin, cwd and environment context, so it is owner-only (0600);
+// existing files from older versions (0644) are tightened on the next write.
+func (c *Client) writePromptLog(system, prompt, response string) {
+	outputPath, err := promptLogPath()
+	if err != nil {
+		return
 	}
-	if response != "" {
-		parts = append(parts, fmt.Sprintf("RESPONSE:\n%s", response))
+	content := formatTranscript(system, prompt, response)
+	if err := os.WriteFile(outputPath, []byte(content+"\n"), 0600); err != nil {
+		return
 	}
-
-	content := strings.Join(parts, "\n---\n\n")
-	_ = os.WriteFile(outputPath, []byte(content), 0644)
+	_ = os.Chmod(outputPath, 0600)
 }
