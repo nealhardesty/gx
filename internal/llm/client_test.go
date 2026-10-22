@@ -26,6 +26,15 @@ func stubTools(t *testing.T, installed ...string) {
 	t.Cleanup(func() { lookPath = orig })
 }
 
+// stubContext pins the context block so prompt assertions don't depend on the
+// developer's cwd, HOME, USER or virtualenv.
+func stubContext(t *testing.T) {
+	t.Helper()
+	orig := collectContext
+	collectContext = func() string { return "- cwd: /work" }
+	t.Cleanup(func() { collectContext = orig })
+}
+
 func TestCleanResponse(t *testing.T) {
 	tests := []struct {
 		name, in, want string
@@ -38,7 +47,13 @@ func TestCleanResponse(t *testing.T) {
 		{"inline backticks", "`ls -la`", "ls -la"},
 		{"command substitution kept", "echo `date`", "echo `date`"},
 		{"two inline spans kept", "`a` and `b`", "`a` and `b`"},
-		{"unterminated fence kept", "```bash\nls", "```bash\nls"},
+		{"unterminated fence", "```bash\nls", "ls"},
+		{"prose after fence dropped", "```bash\nls\n```\nThis lists files.", "ls"},
+		{"prose before fence dropped", "Here you go:\n```sh\npwd\n```", "pwd"},
+		{"first of two fences", "```sh\nls\n```\nor\n```sh\nls -a\n```", "ls"},
+		{"single-line fence with lang", "```bash ls -la```", "ls -la"},
+		{"single-line fence no lang", "```ls -la```", "ls -la"},
+		{"empty fence", "```\n```", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,45 +64,39 @@ func TestCleanResponse(t *testing.T) {
 	}
 }
 
-func TestDetectShell(t *testing.T) {
+func TestShellFromEnv(t *testing.T) {
+	const (
+		winPS51 = `C:\Users\me\Documents\WindowsPowerShell\Modules;C:\Program Files\WindowsPowerShell\Modules`
+		winPS7  = `C:\Users\me\OneDrive\Documents\PowerShell\Modules;C:\Program Files\PowerShell\7\Modules`
+		winCmd  = `%ProgramFiles%\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules`
+		comspec = `C:\Windows\system32\cmd.exe`
+	)
 	tests := []struct {
-		name                     string
-		shell, psModule, comspec string
-		want                     string
+		name                            string
+		goos, shell, psModules, comspec string
+		want                            string
 	}{
-		{"zsh path", "/bin/zsh", "", "", "zsh"},
-		{"fish path", "/usr/local/bin/fish", "", "", "fish"},
-		{"SHELL beats PSModulePath", "/bin/bash", "C:\\ps", "", "bash"},
-		{"powershell before comspec", "", "C:\\ps", "C:\\Windows\\system32\\cmd.exe", "powershell"},
-		{"cmd", "", "", "C:\\Windows\\system32\\cmd.exe", "cmd"},
+		{"zsh path", "darwin", "/bin/zsh", "", "", "zsh"},
+		{"fish path", "linux", "/usr/local/bin/fish", "", "", "fish"},
+		{"unix fallback is sh", "linux", "", "", "", "sh"},
+		{"SHELL beats PowerShell", "windows", "/usr/bin/bash", winPS7, comspec, "bash"},
+		{"backslash path and EXE", "windows", `C:\Program Files\Git\bin\BASH.EXE`, "", "", "bash"},
+		{"pwsh 7", "windows", "", winPS7, comspec, "pwsh"},
+		{"windows powershell 5.1", "windows", "", winPS51, comspec, "powershell"},
+		{"cmd despite machine-wide PSModulePath", "windows", "", winCmd, comspec, "cmd"},
+		{"windows fallback", "windows", "", "", "", "powershell"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("SHELL", tt.shell)
-			t.Setenv("PSModulePath", tt.psModule)
-			t.Setenv("ComSpec", tt.comspec)
-			if got := detectShell(); got != tt.want {
-				t.Errorf("detectShell() = %q, want %q", got, tt.want)
+			if got := shellFromEnv(tt.goos, tt.shell, tt.psModules, tt.comspec); got != tt.want {
+				t.Errorf("shellFromEnv() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestDetectShellFallback(t *testing.T) {
-	t.Setenv("SHELL", "")
-	t.Setenv("PSModulePath", "")
-	t.Setenv("ComSpec", "")
-	want := "bash"
-	if runtime.GOOS == "windows" {
-		want = "powershell"
-	}
-	if got := detectShell(); got != want {
-		t.Errorf("detectShell() = %q, want %q", got, want)
-	}
-}
-
 func TestSystemInstructionPerShell(t *testing.T) {
-	stubTools(t)
+	stubContext(t)
 	tests := []struct {
 		shell    string
 		contains []string
@@ -117,7 +126,7 @@ func TestSystemInstructionPerShell(t *testing.T) {
 }
 
 func TestSystemInstructionVerbose(t *testing.T) {
-	stubTools(t)
+	stubContext(t)
 	quiet := (&Client{shell: "bash", platform: "linux/amd64"}).buildSystemInstruction()
 	loud := (&Client{shell: "bash", platform: "linux/amd64", verbose: true}).buildSystemInstruction()
 	if !strings.Contains(quiet, "No comments.") {
@@ -129,7 +138,7 @@ func TestSystemInstructionVerbose(t *testing.T) {
 }
 
 func TestSystemInstructionPlatformNotes(t *testing.T) {
-	stubTools(t)
+	stubContext(t)
 	mac := (&Client{shell: "zsh", platform: "darwin/arm64"}).buildSystemInstruction()
 	if !strings.Contains(mac, "BSD") {
 		t.Error("darwin prompt should mention BSD userland")
@@ -190,7 +199,7 @@ func TestTruncateIsRuneSafe(t *testing.T) {
 }
 
 func TestBuildPromptFormat(t *testing.T) {
-	stubTools(t)
+	stubContext(t)
 	c := &Client{shell: "bash", platform: "linux/amd64"}
 	got := c.BuildPrompt("list files")
 	if !strings.HasPrefix(got, "SYSTEM:\n") || !strings.HasSuffix(got, "\n\n---\n\nUSER:\nlist files") {
@@ -214,6 +223,10 @@ func TestPromptLogPath(t *testing.T) {
 	t.Setenv("GX_PROMPT_OUTPUT", "/var/tmp/x")
 	if got, _ := promptLogPath(); got != "/var/tmp/x" {
 		t.Errorf("absolute path = %q", got)
+	}
+	t.Setenv("GX_PROMPT_OUTPUT", "OFF")
+	if got, err := promptLogPath(); got != "" || err != nil {
+		t.Errorf("off = %q, %v; want logging disabled", got, err)
 	}
 }
 
@@ -254,5 +267,15 @@ func TestWritePromptLogOmitsEmptyResponse(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if strings.Contains(string(data), "RESPONSE:") {
 		t.Errorf("failed request should have no RESPONSE section:\n%s", data)
+	}
+}
+
+func TestWritePromptLogOff(t *testing.T) {
+	t.Setenv("GX_PROMPT_OUTPUT", "off")
+	(&Client{}).writePromptLog("sys", "p", "r")
+	// "off" must disable logging, not create a file named "off" in the cwd.
+	if _, err := os.Stat("off"); !os.IsNotExist(err) {
+		_ = os.Remove("off")
+		t.Error(`GX_PROMPT_OUTPUT=off created a file named "off"`)
 	}
 }

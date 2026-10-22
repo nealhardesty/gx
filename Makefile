@@ -2,7 +2,11 @@
 # Makefile for build, test, and development tasks
 
 VERSION=$(shell grep 'const Version' internal/version/version.go | cut -d'"' -f2)
-GOFLAGS=-ldflags="-s -w"
+# Not named GOFLAGS: make exports overridden environment variables, and go
+# cannot parse GOFLAGS=-ldflags="-s -w" (breaks every target when CI sets GOFLAGS).
+LDFLAGS := -ldflags="-s -w"
+# The race detector needs cgo and a C compiler; clear it with `make test RACE=`.
+RACE ?= -race
 
 # Detect OS and set binary name accordingly
 GOOS=$(shell go env GOOS)
@@ -27,15 +31,15 @@ build: build-gx build-gxx
 
 ## build-gx: Compile the gx binary
 build-gx:
-	go build $(GOFLAGS) -o $(GX_BINARY) .
+	go build $(LDFLAGS) -o $(GX_BINARY) .
 
 ## build-gxx: Compile the gxx binary
 build-gxx:
-	go build $(GOFLAGS) -o $(GXX_BINARY) ./cmd/gxx
+	go build $(LDFLAGS) -o $(GXX_BINARY) ./cmd/gxx
 
-## test: Run all tests with race detection
+## test: Run all tests (race detector on; RACE= to disable)
 test:
-	go test -race -v ./...
+	go test $(RACE) -v ./...
 
 ## run: Build and run the application (use ARGS="your prompt" to pass arguments)
 run: build-gx
@@ -68,9 +72,10 @@ tidy:
 version:
 	@echo "gx version $(VERSION)"
 
-## version-increment: Bump the patch version in internal/version/version.go
-version-increment:
-	@VERSION=$$(grep 'Version = ' internal/version/version.go | sed 's/.*"\(.*\)".*/\1/') && \
+# Shell snippet shared by version-increment and push. push must not call
+# $(MAKE): make runs any recipe line containing $(MAKE) even under `make -n`,
+# which would turn a dry run of push into a real commit.
+BUMP_VERSION = VERSION=$$(grep 'Version = ' internal/version/version.go | sed 's/.*"\(.*\)".*/\1/') && \
 	MAJOR=$$(echo $$VERSION | cut -d. -f1) && \
 	MINOR=$$(echo $$VERSION | cut -d. -f2) && \
 	PATCH=$$(echo $$VERSION | cut -d. -f3) && \
@@ -79,11 +84,18 @@ version-increment:
 	rm -f internal/version/version.go.bak && \
 	echo "Bumped $$VERSION → $$NEW_VERSION"
 
-## push: Bump patch version, run checks, commit, push, and tag
-push: fmt tidy build test version-increment
-	@NEW_VERSION=$$(grep 'Version = ' internal/version/version.go | sed 's/.*"\(.*\)".*/\1/') && \
-	git add -A && \
-	git commit -m "release: v$$NEW_VERSION.  $$(gitsum)" && \
+## version-increment: Bump the patch version in internal/version/version.go
+version-increment:
+	@$(BUMP_VERSION)
+
+## push: Run checks, commit (message from gitsum), bump patch version, push, and tag
+push: fmt tidy build test
+	@command -v gitsum >/dev/null 2>&1 || { echo "push: gitsum not found on PATH"; exit 1; }
+	@git add -A && \
+	MSG=$$(gitsum) && [ -n "$$MSG" ] || { echo "push: gitsum produced no commit message; nothing committed"; exit 1; }; \
+	$(BUMP_VERSION) && \
+	git add internal/version/version.go && \
+	git commit -m "release: v$$NEW_VERSION.  $$MSG" && \
 	git push && \
 	git tag v$$NEW_VERSION && \
 	git push --tags && \
@@ -96,8 +108,8 @@ update-llm:
 
 ## install: Install both gx and gxx binaries to GOPATH/bin
 install:
-	go install $(GOFLAGS) .
-	go install $(GOFLAGS) ./cmd/gxx
+	go install $(LDFLAGS) .
+	go install $(LDFLAGS) ./cmd/gxx
 
 ## help: Show this help message
 help:

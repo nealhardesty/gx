@@ -16,13 +16,13 @@ Things that are wrong or missing in the current design, found while writing SPEC
 |------|-----|--------|
 | **CI** | No automated checks. Add a GitHub Actions workflow on push/PR that runs `make check` on Linux, macOS and Windows (AGENTS.md: CI calls make targets only). | S |
 | **Request timeout + Ctrl-C** | Requests use `context.Background()`; a hung provider hangs gx. Use `signal.NotifyContext` plus a `GX_TIMEOUT` (default ~60s). | S |
-| **Explicit provider choice** | The `claude` CLI on `PATH` always wins; the only way around it is a `PATH` hack. Add `GX_PROVIDER=claude\|openrouter\|ollama` (best done as `LLM_PROVIDER` in easy-llm-wrapper, honoured by `ConfigFromEnv`). | S–M |
 | **Flags anywhere** | `gx "list files" -y` treats `-y` as prompt text — the most common usage trap. Parse known flags from any position, with `--` to force the rest to be prompt text. | S |
 | **`-p` without a provider** | `-p` never sends anything but still fails when no provider is configured. Build the prompt without constructing a provider client. | S |
 | **Parent-shell detection** | Shell comes from `$SHELL` (login shell). Running `bash` inside a zsh login gets zsh syntax. Inspect the parent process (`ps -o comm= -p $PPID`, or `/proc/$PPID/comm` on Linux) and fall back to `$SHELL`. | S |
-| **Claude CLI prompt in argv** | easy-llm-wrapper passes the prompt and system prompt as `claude` arguments, visible in `ps` to other local users. Pipe the prompt on stdin instead (wrapper change). | S |
 | **`-D` prefix consistency** | With the `claude` provider, wrapper debug lines are prefixed `[llm debug]`, breaking "every line starts with `#`". Let the wrapper take a debug writer/prefix. | S |
 | **Windows test coverage** | CLI tests skip on Windows. Add PowerShell/cmd variants once CI has a Windows runner. | M |
+| **Verify Windows shell detection** | Telling pwsh / Windows PowerShell / cmd apart relies on the user module path PowerShell prepends to `PSModulePath` (SPEC §5.4). Unit-tested, but not yet confirmed on a real Windows machine, including Git Bash, OneDrive-redirected Documents, and PowerShell nested inside pwsh. | S |
+| **Faster Claude default for gx** | The wrapper's Claude CLI default is `sonnet`; gx is a latency-sensitive one-shot tool and may want `haiku` unless `GX_MODEL`/`MODEL` is set. Decide after `make eval` exists. | S |
 | **Naming leftovers** | `internal/history` holds only the staging file (rename to `staging`); root `version.go` re-export is unused. | S |
 
 ---

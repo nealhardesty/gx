@@ -5,6 +5,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -56,7 +57,7 @@ func NewClient(cfg Config) (*Client, error) {
 		elw:      elwClient,
 		verbose:  cfg.Verbose,
 		debug:    cfg.Debug,
-		shell:    detectShell(),
+		shell:    DetectShell(),
 		platform: detectPlatform(),
 	}
 
@@ -103,6 +104,9 @@ func (c *Client) Generate(ctx context.Context, prompt string) (string, error) {
 	result := cleanResponse(resp.Text)
 	c.debugf("response:\n%s", result)
 	c.writePromptLog(systemPrompt, prompt, result)
+	if result == "" {
+		return "", errors.New("model returned an empty response")
+	}
 	return result, nil
 }
 
@@ -123,16 +127,31 @@ func formatTranscript(system, prompt, response string) string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-// cleanResponse trims the model output and strips a Markdown code fence or
-// inline backticks wrapping the whole reply, which models emit despite instructions.
+// fenceLangs are info strings that may directly follow an opening fence.
+var fenceLangs = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "fish": true, "shell": true, "console": true,
+	"powershell": true, "pwsh": true, "ps1": true, "cmd": true, "bat": true, "batch": true,
+}
+
+// cleanResponse trims the model output and unwraps Markdown that models emit
+// despite instructions: the first fenced code block anywhere in the reply
+// (prose around it is dropped), or a single line wrapped in one pair of backticks.
 func cleanResponse(text string) string {
 	s := strings.TrimSpace(text)
 
-	if strings.HasPrefix(s, "```") {
-		lines := strings.Split(s, "\n")
-		if len(lines) >= 2 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
-			return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+	if start := strings.Index(s, "```"); start >= 0 {
+		body := s[start+3:]
+		if end := strings.Index(body, "```"); end >= 0 {
+			body = body[:end]
 		}
+		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
+			// Multi-line fence: the rest of the opening line is the info string.
+			body = body[nl+1:]
+		} else if fields := strings.Fields(body); len(fields) > 1 && fenceLangs[strings.ToLower(fields[0])] {
+			// Single-line fence such as ```bash ls```.
+			body = strings.TrimSpace(body)[len(fields[0]):]
+		}
+		return strings.TrimSpace(body)
 	}
 
 	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' && !strings.Contains(s, "\n") &&
@@ -212,7 +231,7 @@ func (c *Client) buildSystemInstruction() string {
 		}
 	}
 
-	if ctx := collectEnvironment(); ctx != "" {
+	if ctx := collectContext(); ctx != "" {
 		b.WriteString("\nContext:\n")
 		b.WriteString(ctx)
 	}
@@ -257,6 +276,9 @@ var (
 
 	sensitivePatterns = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"}
 )
+
+// collectContext is a variable so tests can pin the context block.
+var collectContext = collectEnvironment
 
 // maxEnvValue caps any single context value, in runes.
 const maxEnvValue = 200
@@ -320,29 +342,41 @@ func truncate(val string, maxRunes int) string {
 	return string(runes[:maxRunes]) + " (truncated)"
 }
 
-// detectShell detects the current shell.
-func detectShell() string {
-	if shell := os.Getenv("SHELL"); shell != "" {
-		parts := strings.Split(shell, "/")
-		return strings.TrimSuffix(parts[len(parts)-1], ".exe")
-	}
+// DetectShell reports the shell gx generates for and executes with:
+// sh, bash, zsh, fish, ..., powershell, pwsh or cmd.
+func DetectShell() string {
+	return shellFromEnv(runtime.GOOS, os.Getenv("SHELL"), os.Getenv("PSModulePath"), os.Getenv("ComSpec"))
+}
 
-	// Check PSModulePath before ComSpec — PSModulePath is set in PowerShell
-	// but ComSpec is often also set even when running in PowerShell.
-	if os.Getenv("PSModulePath") != "" {
-		return "powershell"
-	}
-
-	if comspec := os.Getenv("ComSpec"); comspec != "" {
-		if strings.Contains(strings.ToLower(comspec), "cmd.exe") {
-			return "cmd"
+// shellFromEnv is DetectShell's pure core.
+func shellFromEnv(goos, shell, psModulePath, comspec string) string {
+	if shell != "" {
+		// Git Bash/MSYS may hand us either separator, and an .exe suffix in any case.
+		base := shell[strings.LastIndexAny(shell, `/\`)+1:]
+		if strings.HasSuffix(strings.ToLower(base), ".exe") {
+			base = base[:len(base)-len(".exe")]
 		}
+		return strings.ToLower(base)
 	}
 
-	if runtime.GOOS == "windows" {
-		return "powershell"
+	if goos != "windows" {
+		return "sh"
 	}
-	return "bash"
+
+	// PSModulePath is a machine-wide variable on modern Windows, so its mere
+	// presence proves nothing. A PowerShell host prepends the user's own module
+	// directory (Documents\PowerShell for pwsh 7+, Documents\WindowsPowerShell for
+	// Windows PowerShell 5.1); cmd.exe sees only the registry value without it.
+	mods := strings.ToLower(psModulePath)
+	switch {
+	case strings.Contains(mods, `documents\powershell\modules`):
+		return "pwsh"
+	case strings.Contains(mods, `documents\windowspowershell\modules`):
+		return "powershell"
+	case strings.Contains(strings.ToLower(comspec), "cmd.exe"):
+		return "cmd"
+	}
+	return "powershell"
 }
 
 // detectPlatform detects the current platform, including WSL2.
@@ -362,10 +396,14 @@ func detectPlatform() string {
 	return fmt.Sprintf("%s/%s", goos, arch)
 }
 
-// promptLogPath returns where the prompt log is written.
-// Defaults to ~/.gxprompt; overridden by GX_PROMPT_OUTPUT (a leading ~/ is expanded).
+// promptLogPath returns where the prompt log is written, or "" when logging is off.
+// Defaults to ~/.gxprompt; overridden by GX_PROMPT_OUTPUT (a leading ~/ is expanded,
+// "off" disables the log, a relative path is relative to the working directory).
 func promptLogPath() (string, error) {
 	outputPath := os.Getenv("GX_PROMPT_OUTPUT")
+	if strings.EqualFold(outputPath, "off") {
+		return "", nil
+	}
 	if outputPath != "" && !strings.HasPrefix(outputPath, "~/") {
 		return outputPath, nil
 	}
@@ -380,16 +418,21 @@ func promptLogPath() (string, error) {
 }
 
 // writePromptLog writes the prompt log to a file for debugging.
-// The log holds the prompt, stdin, cwd and environment context, so it is owner-only (0600);
-// existing files from older versions (0644) are tightened on the next write.
+// The log holds the prompt, stdin, cwd and environment context, so a regular file
+// is made owner-only (0600) before anything is written — including files left at
+// 0644 by older versions. Non-regular targets (/dev/null, a tty) are left alone.
 func (c *Client) writePromptLog(system, prompt, response string) {
 	outputPath, err := promptLogPath()
+	if err != nil || outputPath == "" {
+		return
+	}
+	f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return
 	}
-	content := formatTranscript(system, prompt, response)
-	if err := os.WriteFile(outputPath, []byte(content+"\n"), 0600); err != nil {
-		return
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Mode().IsRegular() {
+		_ = f.Chmod(0600)
 	}
-	_ = os.Chmod(outputPath, 0600)
+	_, _ = f.WriteString(formatTranscript(system, prompt, response) + "\n")
 }

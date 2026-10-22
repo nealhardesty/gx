@@ -37,7 +37,7 @@ Every run is a single, stateless request: no conversation history is kept. See [
 
 **Pick a provider** — gx uses the first one available, in this order:
 
-1. **Claude CLI** — if [`claude`](https://claude.com/claude-code) is on your `PATH`, it is used automatically. No further setup.
+1. **Claude CLI** — if [`claude`](https://claude.com/claude-code) is on your `PATH`, it is used automatically (as a plain model call: no agent tools, no MCP servers). No further setup.
 2. **OpenRouter (cloud):**
    ```bash
    export OPENROUTER_API_KEY=your_api_key_here
@@ -45,11 +45,11 @@ Every run is a single, stateless request: no conversation history is kept. See [
 3. **Ollama (local):**
    ```bash
    # Install Ollama: https://ollama.com
-   ollama pull gpt-oss:20b          # the default model; or pull any model and set GX_MODEL
+   ollama pull qwen3.8:27b          # the default model; or pull any model and set GX_MODEL
    export OLLAMA_HOST=http://localhost:11434
    ```
 
-> If `claude` is on your `PATH` it wins even when `OPENROUTER_API_KEY` or `OLLAMA_HOST` is set. See [Troubleshooting](#forcing-a-specific-provider) to override.
+> If `claude` is on your `PATH` it wins even when `OPENROUTER_API_KEY` or `OLLAMA_HOST` is set. Set `LLM_PROVIDER=openrouter` or `LLM_PROVIDER=ollama` to override.
 
 **Build from source:**
 ```bash
@@ -103,7 +103,7 @@ git diff | gx -  # Use stdin as entire prompt
 | `-D` | Debug mode — dump all activity to stderr, each line prefixed with `#`. Implies `-v`. |
 | `--version` | Display version information |
 
-When a command is executed (`-x` or `-y`), its exit code becomes gx's exit code, and gx's own banners go to stderr — stdout carries only the command's output.
+When a command is executed (`-x` or `-y`), it runs in the same shell gx generated it for, its exit code becomes gx's exit code (128+N if it was killed by signal N, like a shell), and gx's own banners go to stderr — stdout carries only the command's output. Ctrl-C goes to the running command; gx waits for it to finish.
 
 ### Stdin Support
 
@@ -134,11 +134,13 @@ Piped content is untrusted input to the model. Prefer `gx -` and review over `gx
 | File | Mode | Purpose |
 |------|------|---------|
 | `~/.gx` | 0600 | Latest generated command (staging area) |
-| `~/.gxprompt` | 0600 | Last full prompt and response (debug log; path set by `GX_PROMPT_OUTPUT`) |
+| `~/.gxprompt` | 0600 | Last full prompt and response (debug log; path set by `GX_PROMPT_OUTPUT`, or `off` to disable) |
+
+Generation still works without a home directory (e.g. in a container); gx just warns that it couldn't stage the command.
 
 ## Shell and Platform Aware
 
-gx reads your shell from `$SHELL` (your login shell), or on Windows detects PowerShell vs CMD, and tailors the prompt to it: correct comment syntax (`#` vs `REM`), line continuation (`\`, PowerShell backtick, CMD `^`), and fish-specific syntax.
+gx reads your shell from `$SHELL` (your login shell), or on Windows tells PowerShell 7 (`pwsh`), Windows PowerShell and CMD apart, and tailors the prompt to it: correct comment syntax (`#` vs `REM`), line continuation (`\`, PowerShell backtick, CMD `^`), and fish-specific syntax.
 
 Platform is detected too — macOS, Linux, WSL2, and Windows. On macOS the model is told the userland is BSD (so you get `sed -i ''`, not GNU `sed -i`); on WSL2 it is told Windows drives live under `/mnt/<letter>`.
 
@@ -162,16 +164,17 @@ Only these allow-listed variables are sent; API keys and anything secret-named a
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `LLM_PROVIDER` | Force `claude`, `openrouter` or `ollama` instead of auto-detecting | auto |
 | `OPENROUTER_API_KEY` | OpenRouter API key — enables OpenRouter (used if no `claude` CLI) | — |
 | `OLLAMA_HOST` | Ollama base URL — enables Ollama (used if neither of the above) | — |
 | `GX_MODEL` | Model override (takes priority over `MODEL`) | provider default |
 | `MODEL` | Model override | provider default |
-| `GX_PROMPT_OUTPUT` | Path for the prompt log (`~/` is expanded) | `~/.gxprompt` |
+| `GX_PROMPT_OUTPUT` | Path for the prompt log (`~/` is expanded; other relative paths are relative to the current directory), or `off` | `~/.gxprompt` |
 | `LLM_DEBUG` | Set to `1` to trace provider selection inside easy-llm-wrapper | — |
 
-**Provider priority:** `claude` CLI on `PATH` > `OPENROUTER_API_KEY` > `OLLAMA_HOST`
+**Provider priority:** `LLM_PROVIDER` if set, else `claude` CLI on `PATH` > `OPENROUTER_API_KEY` > `OLLAMA_HOST`
 
-**Default models:** Claude CLI's own default · `anthropic/claude-3-haiku` (OpenRouter) · `gpt-oss:20b` (Ollama)
+**Default models:** `sonnet` (Claude CLI) · `anthropic/claude-haiku-5.5` (OpenRouter) · `qwen3.8:27b` (Ollama). For the fastest replies from the Claude CLI, try `GX_MODEL=haiku`.
 
 ### Debugging
 
@@ -180,7 +183,7 @@ Use `-D` for a full diagnostic dump to stderr. Every line is prefixed with `#` (
 ```bash
 gx -D "list files in current directory"
 # provider: openrouter
-# model:    anthropic/claude-3-haiku
+# model:    anthropic/claude-haiku-5.5
 # shell:    zsh
 # platform: darwin/arm64
 # prompt:
@@ -212,7 +215,7 @@ Everything runs through `make`; bare `make` lists the targets.
 | `make build` | Build `./gx` and `./gxx` |
 | `make install` | `go install` both binaries |
 | `make run ARGS="..."` | Build and run `gx` with arguments |
-| `make test` | Run all tests with the race detector |
+| `make test` | Run all tests with the race detector (`make test RACE=` where no C compiler is available) |
 | `make check` | gofmt check + `go vet` + tests (what CI should run) |
 | `make lint` | `go vet` |
 | `make fmt` | `gofmt -s` (+ `goimports` if installed) |
@@ -223,7 +226,7 @@ Everything runs through `make`; bare `make` lists the targets.
 | `make update-llm` | Pull the latest easy-llm-wrapper, bypassing the module proxy cache |
 | `make clean` | Remove built binaries |
 
-Tests never touch your real `~/.gx` or call a real LLM: the CLI tests run against a fake Ollama server with an isolated `HOME` and `PATH`.
+Tests never touch your real `~/.gx` or call a real LLM: the CLI tests run against a fake Ollama server with an isolated `HOME` and an empty `PATH`. `make -n push` is a safe dry run.
 
 ## Project Structure
 
@@ -269,17 +272,18 @@ export OPENROUTER_API_KEY=your_key_here
 
 Ensure the configured provider is reachable:
 - **Claude CLI:** `claude -p hello` should answer
-- **Ollama:** `ollama list` — confirm Ollama is running, `OLLAMA_HOST` is correct, and the model (default `gpt-oss:20b`) is pulled
-- **OpenRouter:** confirm `OPENROUTER_API_KEY` is valid at [openrouter.ai](https://openrouter.ai)
+- **Ollama:** `ollama list` — confirm Ollama is running, `OLLAMA_HOST` is correct, and the model (default `qwen3.8:27b`) is pulled
+- **OpenRouter:** confirm `OPENROUTER_API_KEY` is valid at [openrouter.ai](https://openrouter.ai). An HTTP 404 usually means the model was retired; set `GX_MODEL` to a current one
 
 Run `LLM_DEBUG=1 gx -D "..."` to see which provider was picked and why.
 
 ### Forcing a specific provider
 
-The `claude` CLI is chosen whenever it is on `PATH`. To use OpenRouter or Ollama instead, run gx with a `PATH` that excludes it, e.g. a shell alias:
+The `claude` CLI is chosen whenever it is on `PATH`. To use OpenRouter or Ollama instead, set `LLM_PROVIDER`:
 
 ```bash
-alias gxo='PATH=/usr/local/bin:/usr/bin:/bin gx'
+export LLM_PROVIDER=ollama          # or openrouter, claude
+alias gxo='LLM_PROVIDER=openrouter gx'
 ```
 
 ## License

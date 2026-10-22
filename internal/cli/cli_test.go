@@ -12,8 +12,10 @@ import (
 	"testing"
 )
 
-// env isolates a test: temp HOME, prompt log in the temp dir, no claude CLI on
-// PATH and no cloud key, so provider selection is fully controlled by the test.
+// env isolates a test: temp HOME, prompt log in the temp dir, an empty PATH (so no
+// claude CLI can ever be found, wherever the machine installs it) and no cloud key,
+// so provider selection is fully controlled by the test. Everything the tests
+// execute is a builtin of the absolute SHELL.
 type env struct {
 	home    string
 	logPath string
@@ -28,7 +30,8 @@ func setupEnv(t *testing.T) env {
 	e := env{home: home, logPath: filepath.Join(home, "prompt.log")}
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/sh")
-	t.Setenv("PATH", "/usr/bin:/bin") // must not contain the claude CLI
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("LLM_PROVIDER", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OLLAMA_HOST", "")
 	t.Setenv("MODEL", "")
@@ -255,5 +258,112 @@ func TestBuildPrompt(t *testing.T) {
 				t.Errorf("buildPrompt = %q, %v; want %q", got, err, tt.want)
 			}
 		})
+	}
+}
+
+// stage writes a command into the test's ~/.gx.
+func stage(t *testing.T, e env, command string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(e.home, ".gx"), []byte(command), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecuteStagedExitCodes(t *testing.T) {
+	e := setupEnv(t)
+	tests := []struct {
+		command string
+		want    int
+	}{
+		{"exit 7", 7},
+		{"kill -TERM $$", 128 + 15}, // killed by a signal: shell convention 128+N
+	}
+	for _, tt := range tests {
+		stage(t, e, tt.command)
+		if r := gx(t, Options{}, "", "-x"); r.code != tt.want {
+			t.Errorf("-x %q: exit %d, want %d", tt.command, r.code, tt.want)
+		}
+	}
+}
+
+func TestWhitespacePromptShowsUsage(t *testing.T) {
+	setupEnv(t)
+	last := fakeOllama(t, "ls")
+	r := gx(t, Options{}, "  \n ", "  ", "-")
+	if r.code != 1 || !strings.Contains(r.stderr, "Usage: gx") {
+		t.Errorf("got %+v", r)
+	}
+	if *last != nil {
+		t.Error("a blank prompt must not be sent")
+	}
+}
+
+func TestEmptyReplyIsAnErrorAndKeepsStagedCommand(t *testing.T) {
+	e := setupEnv(t)
+	fakeOllama(t, "```\n```")
+	stage(t, e, "echo previous")
+
+	r := gx(t, Options{ForceYolo: true}, "", "do it")
+	if r.code != 1 || !strings.Contains(r.stderr, "empty response") {
+		t.Errorf("got %+v", r)
+	}
+	if r.stdout != "" {
+		t.Errorf("nothing should be printed or executed; stdout = %q", r.stdout)
+	}
+	if got, _ := os.ReadFile(filepath.Join(e.home, ".gx")); string(got) != "echo previous" {
+		t.Errorf("staged command was overwritten: %q", got)
+	}
+}
+
+func TestYoloRunsOnlyTheFencedCommand(t *testing.T) {
+	setupEnv(t)
+	fakeOllama(t, "```sh\necho clean\n```\nThis prints `whoami` for you.")
+
+	r := gx(t, Options{ForceYolo: true}, "", "do it")
+	if r.code != 0 || r.stdout != "echo clean\nclean\n" {
+		t.Errorf("got %+v", r)
+	}
+}
+
+func TestGxxCanDisableYolo(t *testing.T) {
+	setupEnv(t)
+	fakeOllama(t, "echo should-not-run")
+
+	r := gx(t, Options{ForceYolo: true}, "", "-y=false", "do it")
+	if r.code != 0 || r.stdout != "echo should-not-run\n" {
+		t.Errorf("gxx -y=false must not execute: %+v", r)
+	}
+}
+
+func TestMissingHomeOnlyWarns(t *testing.T) {
+	setupEnv(t)
+	fakeOllama(t, "ls")
+	t.Setenv("HOME", "")
+
+	r := gx(t, Options{}, "", "list files")
+	if r.code != 0 || r.stdout != "ls\n" || !strings.Contains(r.stderr, "Warning: failed to stage") {
+		t.Errorf("generation without HOME: %+v", r)
+	}
+	if r := gx(t, Options{}, "", "-x"); r.code != 1 {
+		t.Errorf("-x without HOME: exit %d, want 1", r.code)
+	}
+}
+
+func TestInterpreterFor(t *testing.T) {
+	tests := []struct {
+		goos, shell, envShell string
+		want                  string
+	}{
+		{"darwin", "zsh", "/bin/zsh", "/bin/zsh -c"},
+		{"linux", "sh", "", "/bin/sh -c"},
+		{"windows", "powershell", "", "powershell -Command"},
+		{"windows", "pwsh", "", "pwsh -Command"},
+		{"windows", "cmd", "", "cmd /C"},
+		{"windows", "bash", "/usr/bin/bash", "bash -c"},
+	}
+	for _, tt := range tests {
+		if got := strings.Join(interpreterFor(tt.goos, tt.shell, tt.envShell), " "); got != tt.want {
+			t.Errorf("interpreterFor(%s, %s, %q) = %q, want %q", tt.goos, tt.shell, tt.envShell, got, tt.want)
+		}
 	}
 }
